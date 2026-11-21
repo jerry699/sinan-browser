@@ -89,7 +89,7 @@ cd build/dist && shasum -a 256 Sinan-*.zip Sinan-*.dmg appcast*.xml > SHA256SUMS
 
 # ⑥ 发布（8 资产：两 zip、两 dmg、两 appcast、SHA256SUMS、RELEASE-NOTES）
 gh release create v0.3.03 --repo jerry699/sinan-browser --title "v0.3.03" \
-  --notes-file docs/RELEASE-NOTES-0.3.03.html \
+  --notes-file docs/RELEASE-NOTES-0.3.03.md \
   build/dist/Sinan-Intel.zip build/dist/Sinan-Intel.dmg \
   build/dist/Sinan.zip build/dist/Sinan.dmg \
   build/dist/appcast-intel.xml build/dist/appcast.xml \
