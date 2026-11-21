@@ -62,3 +62,41 @@
 - [ ] 阿里系站点不要叠加 uBlock 等第三方拦截器（规则会拦支付风控脚本，毒化设备档案 → 拒单）；内置拦截器已做支付豁免
 - [ ] huggingface 直连不可达属正常（自动降级 ModelScope/镜像）
 - [ ] GitHub Releases 在国内时通时不通——Gitee 镜像上线后加进下载渠道
+
+## 8. 0.3.03 双架构发布步骤（2026-11-22，Chromium 159 首发）
+
+两个已验证的 app 直接重打包，**不重新构建**（用户验收的就是这两个二进制）：
+
+```bash
+# ① Intel（build/司南.app，本机已装已验证）
+scripts/package.sh build/司南.app                 # → build/dist/司南-Intel.zip/.dmg
+# ② arm64（build/arm64/司南.app，结构已验证、无实机测试）
+scripts/package.sh build/arm64/司南.app           # → build/dist/司南.zip/.dmg
+
+# ③ ASCII 改名（gh CLI 损坏中文名，见 §3）
+cd build/dist && mv 司南-Intel.zip Sinan-Intel.zip && mv 司南-Intel.dmg Sinan-Intel.dmg
+mv 司南.zip Sinan.zip && mv 司南.dmg Sinan.dmg && cd ../..
+
+# ④ 双 appcast（签名账户 cra-fork；enclosure URL 与资产名逐字一致）
+CRA_UPDATE_URL="https://github.com/jerry699/sinan-browser/releases/download/v0.3.03/Sinan-Intel.zip" \
+  SPARKLE_ACCOUNT=cra-fork scripts/appcast.sh build/dist/Sinan-Intel.zip build/司南.app
+CRA_UPDATE_URL="https://github.com/jerry699/sinan-browser/releases/download/v0.3.03/Sinan.zip" \
+  SPARKLE_ACCOUNT=cra-fork scripts/appcast.sh build/dist/Sinan.zip build/arm64/司南.app
+# → appcast-intel.xml（Intel 通道）+ appcast.xml（ARM 通道），grep 核对版本与 URL
+
+# ⑤ SHA256SUMS 重算（两轮打包后）
+cd build/dist && shasum -a 256 Sinan-*.zip Sinan-*.dmg appcast*.xml > SHA256SUMS.txt && cd ../..
+
+# ⑥ 发布（8 资产：两 zip、两 dmg、两 appcast、SHA256SUMS、RELEASE-NOTES）
+gh release create v0.3.03 --repo jerry699/sinan-browser --title "v0.3.03" \
+  --notes-file docs/RELEASE-NOTES-0.3.03.html \
+  build/dist/Sinan-Intel.zip build/dist/Sinan-Intel.dmg \
+  build/dist/Sinan.zip build/dist/Sinan.dmg \
+  build/dist/appcast-intel.xml build/dist/appcast.xml \
+  build/dist/SHA256SUMS.txt
+
+# ⑦ 验证 302→200（§5）
+```
+
+- [ ] **arm64 无实机测试**：发布说明标注「Apple Silicon 版为首次构建，反馈问题请开 Issue」
+- [ ] 本机安装的是 Intel 版——发布后 Sparkle 从 appcast-intel.xml 收到的是同一版本（0.3.03），确认 up-to-date 不误升
