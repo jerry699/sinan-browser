@@ -2655,34 +2655,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     }
 
     /// The fork's Translate Selection on the Chromium engine path: the context-menu items are
-    /// built inside the engine framework, which has no hook for the fork's additions, so the
-    /// command/shortcut reads the selection through the page's own CDP session and runs the
-    /// usual translation HUD. The point is the selection's top-right corner in view coordinates
-    /// (top-left origin), the same space the menu's coordinates came in.
+    /// built inside the engine framework (the extension covers the menu), and the command and
+    /// shortcut read the selection through the page's own CDP channel — the same one distill
+    /// discovery uses, which is proven on this engine.
     func engineTranslateSelection() {
-        guard !isIncognito, let browser = currentBrowser else { return }
+        guard !isIncognito, let tabID = browsers.visibleTabID,
+              let item = store.item(tabID), let pageURL = item.tab?.url, !pageURL.isEmpty else { return }
         let expression = "JSON.stringify((function(){var s=window.getSelection().toString();if(!s)return null;var r=s.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
-        let params = "{\"expression\":\"\(expression.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\",\"returnByValue\":true}"
-        browser.sendDevToolsMethod("Runtime.evaluate", params: params) { [weak self] result, error in
-            guard let result,
-                  let outer = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any],
-                  let inner = outer["result"] as? [String: Any],
-                  let value = inner["value"] as? String,
-                  let payload = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+        Task { @MainActor in
+            let json = await MediaDistillService.evaluateInPage(pageURL: pageURL, expression: expression)
+            guard let json,
+                  let payload = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
                   let text = payload["t"] as? String, !text.isEmpty else {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let window { self.showToast(L10n.tr("Select some text first")) }
-                }
+                showToast(L10n.tr("Select some text first"))
                 return
             }
             let x = (payload["x"] as? Double) ?? 200, y = (payload["y"] as? Double) ?? 60
             let w = (payload["w"] as? Double) ?? 0
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard let tabID = self.browsers.visibleTabID else { return }
-                self.browserManagerTranslateSelection(text, tabID: tabID, atPoint: NSPoint(x: x + w, y: y))
-            }
+            browserManagerTranslateSelection(text, tabID: tabID, atPoint: NSPoint(x: x + w, y: y))
         }
     }
 

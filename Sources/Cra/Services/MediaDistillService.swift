@@ -165,7 +165,10 @@ enum MediaDistillService {
     /// Runtime.evaluate in the PAGE's main world: page globals (`window.__playinfo__`)
     /// are visible there, which the isolated world cannot see. The page is found among the
     /// browser's targets by URL, attached with flatten, and evaluated over that session.
-    private static func evaluateInPage(pageURL: String, expression: String) async -> String? {
+    /// Runtime.evaluate in the page's main world through the browser-level CDP channel —
+    /// the fork's proven page-read on the engine path (discovery, and the command-bar's
+    /// Translate Selection).
+    static func evaluateInPage(pageURL: String, expression: String) async -> String? {
         let targets = await browserCDP("Target.getTargets", "{}", session: nil)
         guard let targets,
               let parsed = try? JSONSerialization.jsonObject(with: Data(targets.utf8)) as? [String: Any],
