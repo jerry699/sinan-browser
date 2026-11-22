@@ -207,6 +207,11 @@ final class KeyBindingRegistry {
             // Arc: Edit ▸ Find ▸ Use Selection to Find (no key: ⌘E opens extensions) and Jump to Selection ⌘J.
             KeyAction(id: "useSelectionForFind", name: "Use Selection to Find", section: .edit, shortcuts: [], inCommandBar: false),
             KeyAction(id: "jumpToSelection", name: "Jump to Selection", section: .edit, shortcuts: [Shortcut("j", cmd)], inCommandBar: false),
+            // The fork: Translate Selection and Distill Media need a trigger on the Chromium
+            // engine path, where the context-menu items are the framework's own and carry no
+            // hook for the fork's additions (the menu on the CEF path keeps working).
+            KeyAction(id: "translateSelection", name: "Translate Selection", section: .edit, shortcuts: [Shortcut("y", cmdShift)], triggers: ["translate", "翻译"]),
+            KeyAction(id: "distillMedia", name: "Distill Media", section: .edit, shortcuts: [Shortcut("m", cmdShift)], triggers: ["distill", "蒸馏"]),
             // View
             KeyAction(id: "toggleSidebar", name: "Hide Sidebar", section: .view, shortcuts: [Shortcut("s", cmd)], triggers: ["sidebar", "hide sidebar", "show sidebar"]),
             KeyAction(id: "toggleToolbar", name: "Hide Toolbar", section: .view, shortcuts: [Shortcut("d", cmdShift)], triggers: ["toolbar"]),

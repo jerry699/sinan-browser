@@ -1353,3 +1353,4 @@
 "Not counted as freezes: 司南 was in a loop of its own on purpose.%@" = "不计入卡顿：司南当时在有意执行自己的循环。%@";
 "司南 kept working while the Mac was idle" = "Mac 空闲时司南保持工作";
 "司南 uses %@ of memory" = "司南占用 %@ 内存";
+"Select some text first" = "请先选中文字";

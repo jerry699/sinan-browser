@@ -3534,6 +3534,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "newProfile": if !main.isIncognito, let w = main.window { main.showNewProfileDialog(over: w) }
         case "share": main.shareSelectedPage()
         case "newBoost": main.openBoostEditor()
+        case "translateSelection": main.engineTranslateSelection()
+        case "distillMedia":
+            if let tabID = main.browsers.visibleTabID { main.browserManagerDistillPageMedia(tabID: tabID) }
         case "newEasel":
             guard !main.isIncognito else { break }
             let easel = Easel()
