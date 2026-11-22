@@ -245,6 +245,7 @@ sign "$SPARKLE/Versions/B/Autoupdate"
 sign "$SPARKLE/Versions/B/Updater.app"
 sign "$SPARKLE"
 sign "$APP/Contents/MacOS/CraPluginHost"
+sign "$APP/Contents/MacOS/CraNativeHost"
 sign "$APP/Contents/MacOS/CraInferenceHelper"
 [ -f "$APP/Contents/MacOS/CraWhisper" ] && sign "$APP/Contents/MacOS/CraWhisper"
 for h in "$APP"/Contents/Frameworks/*.app; do if [ -e "$h" ]; then sign "$h" "$ROOT/resources/CraHelper.entitlements"; fi; done

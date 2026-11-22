@@ -49,8 +49,9 @@ enum SinanMenuBridge {
 
         let host = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/CraNativeHost")
         guard fm.fileExists(atPath: host.path) else { return }
+        // Chromium validates the manifest: description is required (max 72 chars).
         let hostManifest = """
-        {"name":"\(hostName)","path":"\(host.path)","type":"stdio","args":["--dir=\(AppPaths.supportDir.path)"],\
+        {"name":"\(hostName)","description":"司南浏览器的本地消息桥","path":"\(host.path)","type":"stdio","args":["--dir=\(AppPaths.supportDir.path)"],\
         "allowed_origins":[\(origins.map { "\"\($0)\"" }.joined(separator: ","))]}
         """
         let dir = AppPaths.chromiumCache.appendingPathComponent("NativeMessagingHosts", isDirectory: true)
@@ -65,8 +66,11 @@ enum SinanMenuBridge {
         let digest = SHA256.hash(data: Data(path.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         let mapped = hex.prefix(32).compactMap { c -> Character? in
-            guard let v = c.asciiValue, (0x30...0x66).contains(v) else { return nil }
-            return Character(UnicodeScalar(v + 49))
+            guard let v = c.asciiValue else { return nil }
+            // Chromium's rule: hex 0-9 map to a-j, hex a-f map to k-p.
+            if (0x30...0x39).contains(v) { return Character(UnicodeScalar(v - 0x30 + 0x61)) }
+            if (0x61...0x66).contains(v) { return Character(UnicodeScalar(v - 0x61 + 0x6B)) }
+            return nil
         }
         return String(mapped)
     }
