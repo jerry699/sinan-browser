@@ -2662,6 +2662,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         guard !isIncognito, let tabID = browsers.visibleTabID,
               let item = store.item(tabID), let pageURL = item.tab?.url, !pageURL.isEmpty else { return }
         let expression = "JSON.stringify((function(){var s=window.getSelection().toString();if(!s)return null;var r=s.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
+        // The bar opening dropped the page's selection: the snapshot taken at open time
+        // (same page, 20 s) is what the user meant; a live read stands in for the shortcut,
+        // where the selection is untouched.
+        if let cached = commandBarSelection, cached.pageURL == pageURL,
+           Date().timeIntervalSince(cached.at) < 20, !cached.text.isEmpty {
+            commandBarSelection = nil
+            browserManagerTranslateSelection(cached.text, tabID: tabID,
+                                             atPoint: NSPoint(x: cached.x + cached.w, y: cached.y))
+            return
+        }
         Task { @MainActor in
             let json = await MediaDistillService.evaluateInPage(pageURL: pageURL, expression: expression)
             guard let json,
@@ -5172,8 +5182,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     /// `fromSidebarAddress`: a click on the sidebar's address, which opens Arc's panel hanging from it
     /// (#663); ⌘L and the rest keep the centred bar.
+    /// The page's selection at the moment the command bar opened (the bar takes focus and
+    /// Chromium drops the page's selection), kept briefly for Translate Selection: the user
+    /// selects, opens the bar, types 翻译 — the Enter reads this snapshot.
+    private var commandBarSelection: (text: String, x: Double, y: Double, w: Double, h: Double, pageURL: String, at: Date)?
+
+    private func captureSelectionForCommandBar() {
+        guard !isIncognito, let tabID = browsers.visibleTabID,
+              let item = store.item(tabID), let pageURL = item.tab?.url, !pageURL.isEmpty else { return }
+        let expression = "JSON.stringify((function(){var s=window.getSelection().toString();if(!s)return null;var r=s.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
+        Task { @MainActor in
+            guard let json = await MediaDistillService.evaluateInPage(pageURL: pageURL, expression: expression),
+                  let payload = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+                  let text = payload["t"] as? String, !text.isEmpty else { return }
+            commandBarSelection = (text,
+                                   (payload["x"] as? Double) ?? 200, (payload["y"] as? Double) ?? 60,
+                                   (payload["w"] as? Double) ?? 0, (payload["h"] as? Double) ?? 0,
+                                   pageURL, Date())
+        }
+    }
+
     func openCommandBar(_ mode: CommandBarMode, fromSidebarAddress: Bool = false) {
         guard let window else { return }
+        captureSelectionForCommandBar()
         // The bar takes over from the sidebar's address field edited in place (#344).
         (shell.sidebarHost as? SidebarView)?.endAddressEditing()
         // A click on the address that closed the bar leaves it closed (Arc, GitHub #88).
