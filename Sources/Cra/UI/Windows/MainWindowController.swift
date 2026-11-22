@@ -2661,7 +2661,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func engineTranslateSelection() {
         guard !isIncognito, let tabID = browsers.visibleTabID,
               let item = store.item(tabID), let pageURL = item.tab?.url, !pageURL.isEmpty else { return }
-        let expression = "JSON.stringify((function(){var s=window.getSelection().toString();if(!s)return null;var r=s.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
+        let expression = "JSON.stringify((function(){var sel=window.getSelection();if(!sel||!sel.rangeCount)return null;var s=sel.toString();if(!s)return null;var r=sel.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
         // The bar opening dropped the page's selection: the snapshot taken at open time
         // (same page, 20 s) is what the user meant; a live read stands in for the shortcut,
         // where the selection is untouched.
@@ -5190,7 +5190,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     private func captureSelectionForCommandBar() {
         guard !isIncognito, let tabID = browsers.visibleTabID,
               let item = store.item(tabID), let pageURL = item.tab?.url, !pageURL.isEmpty else { return }
-        let expression = "JSON.stringify((function(){var s=window.getSelection().toString();if(!s)return null;var r=s.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
+        let expression = "JSON.stringify((function(){var sel=window.getSelection();if(!sel||!sel.rangeCount)return null;var s=sel.toString();if(!s)return null;var r=sel.getRangeAt(0).getBoundingClientRect();return{t:s,x:r.x,y:r.y,w:r.width,h:r.height}})())"
         Task { @MainActor in
             guard let json = await MediaDistillService.evaluateInPage(pageURL: pageURL, expression: expression),
                   let payload = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
