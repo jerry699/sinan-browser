@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         DockedWindowAccessibility.install()
         SystemAppearance.shared.start()
         installURLEventHandler()
+        SinanMenuBridge.startReceiving(app: self)
         observeFrontmostApp()
         PerfCEF.install(app: self)
         CraCEFRuntime.setChromeHosting(store.settings.chromeEngine)

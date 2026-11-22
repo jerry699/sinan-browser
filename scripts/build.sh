@@ -91,6 +91,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 cp "$BIN/Cra" "$APP/Contents/MacOS/$EXE"
 cp "$BIN/CraPluginHost" "$APP/Contents/MacOS/CraPluginHost"
+# The 司南 menu extension's native messaging host (SinanMenuBridge).
+cp "$BIN/CraNativeHost" "$APP/Contents/MacOS/CraNativeHost"
 # Started on demand for local Tidy Tab Titles; exits after 60 s idle.
 cp "$BIN/CraInferenceHelper" "$APP/Contents/MacOS/CraInferenceHelper"
 # One-shot transcription of downloaded media (W2): exits when the transcript is done.
@@ -178,7 +180,7 @@ cp "$BIN/libCraDockTile.dylib" "$DOCK_TILE/Contents/MacOS/CraDockTile"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD_NUMBER/" resources/DockTile-Info.plist > "$DOCK_TILE/Contents/Info.plist"
 
 # Every executable must run on the CPU this build is for (Sparkle ships universal).
-for exe in "$APP/Contents/MacOS/$EXE" "$APP/Contents/MacOS/CraPluginHost" "$APP"/Contents/Frameworks/*.app/Contents/MacOS/*            "$DOCK_TILE/Contents/MacOS/CraDockTile" \
+for exe in "$APP/Contents/MacOS/$EXE" "$APP/Contents/MacOS/CraPluginHost" "$APP/Contents/MacOS/CraNativeHost" "$APP"/Contents/Frameworks/*.app/Contents/MacOS/*            "$DOCK_TILE/Contents/MacOS/CraDockTile" \
            "$APP/Contents/Frameworks/$FW_NAME.framework/$FW_NAME" \
            "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"; do
   [ -e "$exe" ] || continue

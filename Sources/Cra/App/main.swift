@@ -52,6 +52,9 @@ MainActor.assumeIsolated {
         ProfileCleanup.run()
     }
 
+    // The 司南 menu extension and its native messaging host manifest, in place before the
+    // extension list and the host links are read (SinanMenuBridge).
+    SinanMenuBridge.prepare()
     NativeMessagingHosts.link(into: AppPaths.chromiumCache)
 
     let extensions = ExtensionStore.loadList(profileIsFree: profileIsFree)

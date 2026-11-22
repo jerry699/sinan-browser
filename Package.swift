@@ -49,6 +49,9 @@ let whisperBuild = Context.environment["CRA_WHISPER_BUILD"] ?? "\(whisperRoot)/b
 var craTargets: [Target] = [
     .executableTarget(name: "CraPluginHost", path: "Sources/CraPluginHost",
                       linkerSettings: [.linkedFramework("JavaScriptCore")]),
+    // The 司南 menu extension's native messaging host: one framed request per launch,
+    // forwarded to the running browser as a pending file (SinanMenuBridge).
+    .executableTarget(name: "CraNativeHost", path: "Sources/CraNativeHost"),
     // Local model process: llama.cpp's static libraries, no network, exits when idle.
     .executableTarget(
         name: "CraInferenceHelper",

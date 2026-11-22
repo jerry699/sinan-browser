@@ -2686,6 +2686,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         }
     }
 
+    /// The 司南菜单 extension's relays (native messaging): no selection rect travels with the
+    /// request, so the HUD anchors at the mouse where it sits over the page, else the page's
+    /// top-left (view coordinates, top-left origin — the space the CEF menu reported).
+    func nativeTranslateSelection(_ text: String) {
+        guard let rt = browsers.visibleRuntime, !isIncognito else { return }
+        var point = NSPoint(x: 200, y: 60)
+        if let pageRect = pageScreenRect(rt) {
+            let mouse = NSEvent.mouseLocation
+            if pageRect.contains(mouse) {
+                point = NSPoint(x: mouse.x - pageRect.minX, y: pageRect.maxY - mouse.y)
+            }
+        }
+        guard let tabID = browsers.visibleTabID else { return }
+        browserManagerTranslateSelection(text, tabID: tabID, atPoint: point)
+    }
+
+    func nativeDistillMedia() {
+        guard let tabID = browsers.visibleTabID else { return }
+        browserManagerDistillPageMedia(tabID: tabID)
+    }
+
     /// W2-C: distill this page's audio/video into a local note — right-click "Distill Media".
     func browserManagerDistillPageMedia(tabID: UUID) {
         guard tabID == browsers.visibleTabID, let window else { return }
