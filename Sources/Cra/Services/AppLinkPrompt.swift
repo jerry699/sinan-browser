@@ -99,9 +99,12 @@ enum AppLinkPrompt {
             return true
         }
         CraLog.note("page \(page) asks to open \(name) for \(scheme)")
+        // The target app's own icon, not the default brand mark (a ZCode prompt showing
+        // Cra's logo read as a Cra bug, the user's screenshot).
         let alert = AppDialog(title: "Open \(name)?",
                               message: "\(URL(string: browser.currentURL)?.host ?? "This site") wants to open this application.",
-                              actions: [DialogAction("Open \(name)"), .cancel])
+                              actions: [DialogAction("Open \(name)"), .cancel],
+                              icon: .image(NSWorkspace.shared.icon(forFile: app.path)))
         alert.present(over: window) { response in
             if response == .alertFirstButtonReturn { NSWorkspace.shared.open(target) }
         }

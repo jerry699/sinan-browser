@@ -5,7 +5,20 @@ import SwiftUI
 @MainActor
 @Observable
 final class AppDialog {
-    enum Icon { case mark, application, envelope, none }
+    enum Icon: Equatable {
+        case mark, application, envelope, none, image(NSImage)
+
+        static func == (a: Icon, b: Icon) -> Bool {
+            switch (a, b) {
+            case (.mark, .mark), (.application, .application), (.envelope, .envelope), (.none, .none):
+                return true
+            case (.image(let x), .image(let y)):
+                return x === y
+            default:
+                return false
+            }
+        }
+    }
 
     let title: String
     let message: String
@@ -198,6 +211,8 @@ private struct AppDialogView: View {
                 ZStack {
                     if dialog.icon == .application {
                         Image(nsImage: NSApp.applicationIconImage).resizable()
+                    } else if case .image(let icon) = dialog.icon {
+                        Image(nsImage: icon).resizable()
                     } else {
                         BrandMark(size: 56)
                     }
