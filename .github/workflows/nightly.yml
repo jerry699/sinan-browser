@@ -41,6 +41,10 @@ jobs:
 
       # Release, as users run it: the scenario budgets (the recorder's 0.1 % of a core above all)
       # are a release build's. A debug build's recorder alone costs 0.16–0.22 %.
+      - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
+        run: |
+          scripts/build-llama.sh
+          scripts/build-whisper.sh
       - name: Build (release, ad-hoc signed)
         run: scripts/build.sh
 

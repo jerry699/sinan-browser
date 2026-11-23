@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 SRC="$PWD/vendor/llama.cpp"
 BUILD="$SRC/build"
 TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
-ARCH="$(uname -m)"
+ARCH="${BUILD_ARCH:-$(uname -m)}"
+# Cross-compiling (the CI Intel job on an arm runner) cannot use -march=native.
+CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 
 [ -f "$SRC/CMakeLists.txt" ] || { echo "vendor/llama.cpp is missing" >&2; exit 1; }
 
@@ -18,7 +20,10 @@ cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$TARGET" \
-  -DGGML_NATIVE=ON \
+  -DGGML_NATIVE=$([ "$CROSS" = on ] && echo OFF || echo ON) \
+  -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \
+  -DGGML_FMA=$([ "$CROSS" = on ] && echo ON || echo OFF) \
+  -DGGML_F16C=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_METAL=OFF \
   -DGGML_BLAS=ON \
   -DGGML_BLAS_VENDOR=Apple \

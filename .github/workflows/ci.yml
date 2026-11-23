@@ -81,13 +81,17 @@ jobs:
           path: vendor/engine
           key: engine-${{ runner.arch }}-${{ hashFiles('scripts/fetch-engine.sh') }}
 
+      - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
+        run: |
+          scripts/build-llama.sh
+          scripts/build-whisper.sh
       - name: Build (debug, ad-hoc signed)
         run: scripts/build.sh debug
 
       - name: Verify bundle
         run: |
-          codesign --verify --deep --strict --verbose=2 build/Cra.app
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/Cra.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=2 build/司南.app
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/司南.app/Contents/Info.plist
 
       # Launches the app three times and quits it; fails on a crash, hang or crash report.
       # Not blocking until it has proved steady on the hosted runners.
@@ -124,10 +128,14 @@ jobs:
           path: vendor/engine-x86_64
           key: engine-x86_64-${{ hashFiles('scripts/fetch-engine.sh') }}
 
+      - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
+        run: |
+          BUILD_ARCH=x86_64 scripts/build-llama.sh
+          BUILD_ARCH=x86_64 scripts/build-whisper.sh
       - name: Build (debug, ad-hoc signed)
         run: CRA_ARCH=x86_64 scripts/build.sh debug
 
       - name: Verify bundle
         run: |
-          codesign --verify --deep --strict --verbose=2 build/x86_64/Cra.app
-          lipo -archs build/x86_64/Cra.app/Contents/MacOS/Cra
+          codesign --verify --deep --strict --verbose=2 build/x86_64/司南.app
+          lipo -archs build/x86_64/司南.app/Contents/MacOS/司南

@@ -82,10 +82,8 @@ enum SinanMenuBridge {
             MainActor.assumeIsolated { processPending(app: app) }
         }
         // A notification can be missed (the post races the observer's registration on the
-        // very first launch): a slow poll picks up orphans.
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
-            MainActor.assumeIsolated { processPending(app: app) }
-        }
+        // very first launch): a slow poll picks up orphans. The scheduler owns timers.
+        LiveScheduler.shared.every(5) { Self.processPending(app: app) }
     }
 
     private static func processPending(app: AppDelegate) {

@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 SRC="$PWD/vendor/whisper.cpp"
 BUILD="$SRC/build"
 TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
-ARCH="$(uname -m)"
+ARCH="${BUILD_ARCH:-$(uname -m)}"
+# Cross-compiling (the CI Intel job on an arm runner) cannot use -march=native.
+CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 
 [ -f "$SRC/CMakeLists.txt" ] || { echo "vendor/whisper.cpp is missing" >&2; exit 1; }
 
@@ -22,6 +24,7 @@ cmake -S "$SRC" -B "$BUILD" \
   -DWHISPER_BUILD_TESTS=OFF \
   -DWHISPER_BUILD_SERVER=OFF \
   -DGGML_METAL=OFF \
+  -DGGML_NATIVE=$([ "$CROSS" = on ] && echo OFF || echo ON) \
   -DGGML_NATIVE=ON \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_COMMON=OFF \

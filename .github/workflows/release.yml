@@ -34,12 +34,15 @@ on:
 permissions:
   contents: write
 
+# The fork releases through scripts/release-fork.sh / the RUNBOOK by hand; the
+# upstream pipeline (notarization secrets, Cra.app naming) never runs on the fork.
 jobs:
   build:
     name: Build, sign, notarize (${{ matrix.arch }})
     # The SDK a release links against decides AppKit's behaviour, so build on the macOS
     # (and SDK) local builds use: macos-15's 15.5 SDK rounded the page window's corners.
     # Intel is cross-compiled on the same Apple silicon runner, with the same SDK.
+    if: github.repository == 'VictorKildahl/cra'
     runs-on: macos-26
     strategy:
       # One CPU stopping (Apple's notary queue running past the wait) doesn't cancel the other's

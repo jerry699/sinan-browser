@@ -41,13 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         bootstrapIfNeeded()
         // The auto-tidy poller: watches Today's loose-tab counts for TidyTabsService.
-        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
-            MainActor.assumeIsolated {
-            guard self.bootstrapped else { return }
+        // The fork's China-features tick rides the app's scheduler (lint: timers live there).
+        LiveScheduler.shared.every(3) { [weak self] in
+            guard let self, self.bootstrapped else { return }
             // 中国版功能的轮询钩子（停留时长/自动整理/语义索引）——逻辑都在
             // ChinaFeatures.swift，上游文件里只留这一行接触面。
             ChinaFeatures.tick(store: self.store, mainWindows: self.mainWindows)
-            }
         }
     }
 
