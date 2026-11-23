@@ -345,7 +345,10 @@ final class SpaceListView: NSView, NSDraggingSource {
             var row = Row(key: .item(item.id), kind: .newTab, decor: decor(item.id), itemID: item.id, parent: parent, index: index, depth: depth)
             if item.isTabGroup {
                 // Arc lists a group's tabs under its header without an indent.
-                row.eager = .groupHeader(GroupHeaderRowModel(id: item.id, title: item.title ?? "Untitled"))
+                // The fork: a group the user (or createTabGroup) just named enters rename mode
+                // like a folder — upstream builds this model without an editing flag.
+                row.eager = .groupHeader(GroupHeaderRowModel(id: item.id, title: item.title ?? "Untitled",
+                                                             editing: renaming == item.id))
                 row.kind = .groupHeader
                 out.append(row)
                 for (index, c) in SidebarChildOrder.listed(item.children, lookup: store.item) {
