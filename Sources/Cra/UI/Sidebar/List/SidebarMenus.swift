@@ -99,10 +99,24 @@ enum SidebarMenus {
         menu.addItem(.separator())
         changeIconItems(menu, id, custom: tab.customIconKey, list: list)
         add(menu, action: "renameTab", "Rename…") { ui.renamingID = id }
+        // The fork (P5): no matching group exists? The user creates their own — the move
+        // teaches the model. Restored: the migration adopted upstream's menu file, which
+        // never had it.
+        if let sid = store.spaceID(ofItem: id), !store.isIncognito(space: sid) {
+            add(menu, L10n.tr("New Group with This Tab")) {
+                if let gid = store.createTabGroup(with: [id], in: sid) {
+                    ui.renamingID = gid
+                }
+            }
+        }
         if item.title != nil { add(menu, "Use Page Title") { store.rename(id, to: nil) } }
         muteItem(menu, id, tab, ui: ui, store: store, actions: actions)
         if open, web?.host != nil { add(menu, "Customize Page…") { actions.performAction("newBoost") } }
         if m.pinned, tab.liveItemURL == nil { pinnedURLItems(menu, id, navigatedAway: m.navigatedAway, store: store, actions: actions) }
+        // The fork: the pinned tab navigated away — go back (restored from the pre-migration menu).
+        if m.pinned, m.navigatedAway {
+            add(menu, action: "resetTab", L10n.tr("Back to Pinned Page")) { actions.resetPinnedTab(id) }
+        }
         menu.addItem(.separator())
         // Arc: "Add Split View" on the open tab, "Open in Split View" on any other.
         if open {
@@ -166,6 +180,22 @@ enum SidebarMenus {
                 guard s.id != own else { return }
                 for id in ids { store.moveTab(id, toSpace: s.id, window: ui.windowID) }
             }
+        }
+        sub.addItem(.separator())
+        // The fork (P5): filing into a folder is a deliberate act that teaches the model,
+        // and creating a folder is the answer when no group matches. Restored from the
+        // pre-migration menu (upstream's Move to only lists Spaces).
+        let folders = store.children(of: store.focusedSpace(window: ui.windowID).pinnedContainerID).filter { $0.isFolder && !$0.isLiveFolder }
+        if !folders.isEmpty {
+            for f in folders {
+                add(sub, f.title ?? L10n.tr("Folder"), enabled: !ids.allSatisfy { store.item($0)?.parentID == f.id }) {
+                    store.moveItems(ids, to: f.id, index: nil)
+                }
+            }
+            sub.addItem(.separator())
+        }
+        add(sub, ids.count > 1 ? L10n.tr("New Folder with %d Tabs", ids.count) : L10n.tr("New Folder with Tab")) {
+            ui.renamingID = store.createFolder(with: ids).id
         }
         sub.addItem(.separator())
         add(sub, "New Space…") { actions.newSpaceWith(ids) }
