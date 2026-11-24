@@ -5950,6 +5950,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func windowWillEnterFullScreen(_ notification: Notification) {
         sidebarUI.windowFullscreen = true; shell.windowFullscreen = true
         (window as? CraWindow)?.fullScreenChanged()
+        floatingSidebar?.fullscreenChanged()
     }
     func windowWillExitFullScreen(_ notification: Notification) { sidebarUI.windowFullscreen = false; shell.windowFullscreen = false }
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -5966,6 +5967,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { runAfterFullScreen() }
     func windowDidExitFullScreen(_ notification: Notification) {
         (window as? CraWindow)?.fullScreenChanged()
+        floatingSidebar?.fullscreenChanged()
         // Put away into the menu bar, it leaves full screen only to order out: it comes back in it.
         if !isPutAway { store.updateWindow(windowID) { $0.fullScreen = false } }
         // Left with the green button or ⌃⌘F while a video was fullscreen: the page leaves too.

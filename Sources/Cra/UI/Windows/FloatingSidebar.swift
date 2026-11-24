@@ -642,8 +642,16 @@ final class FloatingSidebarController {
         lift.layer?.backgroundColor = NSColor(white: 1, alpha: SidebarBackdrop.floatingLift(dark: pal.isDark, reduceTransparency: reduce, lift: t.liftActive)).cgColor
     }
 
+    /// The window entered/left full screen: the stand-in lights exist only windowed (#315),
+    /// and a staged slider keeps whatever visibility it was built with (the user's fullscreen
+    /// overlap: two sets of lights interleaved at the sidebar's top-left).
+    func fullscreenChanged() {
+        trafficLights?.isHidden = windowFullScreen()
+    }
+
     func show() {
         guard !isShown, sidebarHidden() else { return }
+        trafficLights?.isHidden = windowFullScreen()
         // Not staged by the pointer's wait (a scripted or remote reveal): stage now, a beat before the
         // spring, because the panel reaches the screen a few frames after it is ordered in.
         let fresh = !shell.sidebarDetached

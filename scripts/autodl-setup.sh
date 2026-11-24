@@ -27,6 +27,7 @@ PP=/root/autodl-tmp/miniconda3/envs/sinan/bin/pip
 
 $PP install torch==2.4.0 --index-url $MIRROR
 $PP install -q transformers==4.51.3 datasets accelerate peft trl setproctitle modelscope -i $MIRROR
+$PP install -q llamafactory -i $MIRROR   # SFT 框架（自带 torch 依赖，版本不冲突则跳过重装）
 $PP install -q llama-cpp-python -i $MIRROR || true   # GGUF 合并后本地冒烟（可选）
 
 /root/autodl-tmp/miniconda3/envs/sinan/bin/python - <<'PY'
