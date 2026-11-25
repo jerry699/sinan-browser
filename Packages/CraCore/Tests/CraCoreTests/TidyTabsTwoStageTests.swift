@@ -1,4 +1,5 @@
 import CraCore
+import Foundation
 import Testing
 
 /// The two-stage Tidy Tabs prompt and parsing: topics first, then a closed-book assignment.
@@ -29,12 +30,13 @@ struct TidyTabsTwoStageTests {
         #expect(proposals == [.init(name: "京都旅行", tabs: [0, 5]),
                               .init(name: "购物", tabs: [3, 7]),
                               .init(name: "Cra 项目", tabs: [1, 2])])
-        // A topic with one tab makes no group; a name matching Today's group adds to it.
+        // 新逐项指派协议：单标签主题也成组；组名命中已有分组则并入（joins 以分组 UUID 键控）。
+        let gid = UUID()
         let plan = TidyTabs.plan(TidyTabsTwoStage.proposals(topics: ["旅行", "购物", "杂项"],
                                                             assignments: [0: 0, 1: 0, 2: 1, 3: 2]),
-                                 tabCount: 4, existingGroups: ["购物"])
-        #expect(plan.newGroups == [.init(name: "旅行", tabs: [0, 1])])
-        #expect(plan.joins == [0: [2]])
+                                 tabCount: 4, existingGroups: [.init(id: gid, name: "购物")])
+        #expect(plan.newGroups == [.init(name: "旅行", tabs: [0, 1]), .init(name: "杂项", tabs: [3])])
+        #expect(plan.joins == [gid: [2]])
     }
 
     @Test func instructionsNameEveryTopic() {

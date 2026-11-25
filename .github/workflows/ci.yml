@@ -68,6 +68,8 @@ jobs:
 
       - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
         run: |
+          git clone --depth 1 --branch b4999 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
+          git clone --depth 1 --branch v1.9.6 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
           scripts/build-llama.sh
           scripts/build-whisper.sh
       - name: Build (debug, ad-hoc signed)
@@ -115,6 +117,8 @@ jobs:
 
       - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
         run: |
+          git clone --depth 1 --branch b4999 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
+          git clone --depth 1 --branch v1.9.6 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
           BUILD_ARCH=x86_64 scripts/build-llama.sh
           BUILD_ARCH=x86_64 scripts/build-whisper.sh
       - name: Build (debug, ad-hoc signed)

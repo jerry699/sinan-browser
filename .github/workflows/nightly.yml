@@ -43,6 +43,8 @@ jobs:
       # are a release build's. A debug build's recorder alone costs 0.16–0.22 %.
       - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
         run: |
+          git clone --depth 1 --branch b4999 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
+          git clone --depth 1 --branch v1.9.6 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
           scripts/build-llama.sh
           scripts/build-whisper.sh
       - name: Build (release, ad-hoc signed)
