@@ -66,6 +66,12 @@ def asr(wav_path):
 
 def main():
     n = int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 300
+    seed = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 42
+    out_path = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else str(OUT)
+    global random
+    import random as _r
+    random = _r
+    random.seed(seed)
     dry = "--dry" in sys.argv
     sents = load_sentences(n * 3)
     print(f"sentences loaded: {len(sents)}")
@@ -74,7 +80,7 @@ def main():
             print(" ", s)
         return
     made, tried = 0, 0
-    out = open(OUT, "w", encoding="utf-8")
+    out = open(out_path, "w", encoding="utf-8")
     for s in sents:
         if made >= n:
             break
@@ -98,7 +104,7 @@ def main():
         if made % 25 == 0:
             print(f"{made} pairs (tried {tried})", flush=True)
     out.close()
-    print(f"DONE: {made} correction pairs from {tried} sentences -> {OUT}")
+    print(f"DONE: {made} correction pairs from {tried} sentences -> {out_path}")
 
 if __name__ == "__main__":
     main()
