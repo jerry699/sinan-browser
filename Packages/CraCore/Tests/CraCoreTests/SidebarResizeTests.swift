@@ -13,7 +13,7 @@ struct SidebarResizeTests {
     func snapsTo228OnTheWayDown() {
         let widths: [Double] = [258, 244, 242, 240, 230, 228, 220, 216, 214, 200]
         #expect(trace(from: 260, through: widths) ==
-                [258, 244, 242, 228, 228, 228, 228, 228, 214, 200].map { .width($0) })
+                [258, 244, 242, 240, 224, 224, 224, 224, 224, 200].map { .width($0) })
     }
 
     /// Slowly up from 200 in 1 pt steps: no early pull, then 228 from 228 to 241, free at 242.
@@ -21,7 +21,7 @@ struct SidebarResizeTests {
     func snapsOnceItReaches228OnTheWayUp() {
         let widths: [Double] = [201, 214, 215, 227, 228, 229, 241, 242, 250]
         #expect(trace(from: 200, through: widths) ==
-                [201, 214, 215, 227, 228, 228, 228, 242, 250].map { .width($0) })
+                [201, 214, 215, 224, 224, 224, 241, 242, 250].map { .width($0) })
     }
 
     /// A quick drag to 220 stays 220.

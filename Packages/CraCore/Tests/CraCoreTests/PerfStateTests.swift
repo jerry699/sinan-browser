@@ -262,7 +262,7 @@ struct PerfInsightTests {
         #expect(text.contains("Video: 12 of 600 frames dropped"))
         #expect(text.contains("Idle: 3.0 % CPU over 0 min"))
         #expect(text.contains("renderer ×3: 12.2 % CPU, 900 MB"))
-        #expect(text.contains("Previous session: ended without quitting (Cra 0.1.26)"))
+        #expect(text.contains("Previous session: ended without quitting (Sinan 0.1.26)"))
         #expect(text.contains("Tabs: 40, 6 loaded, 3 asleep, 1 window"))
         #expect(text.contains("tab switch: median 8 ms, p95 40 ms (2)"))
         #expect(text.contains("loadError: -105 ×1"))

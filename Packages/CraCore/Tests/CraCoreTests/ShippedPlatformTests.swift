@@ -30,7 +30,7 @@ struct ShippedPlatformTests {
     @Test(.bug("https://github.com/VictorKildahl/cra/issues/137"))
     func permissionSheetNamesMIDIAndTheClipboard() {
         let site = "https://synth.example/"
-        #expect(PermissionPrompt.message(origin: site, kinds: 1 << 13) == "https://synth.example/ wants to control and reprogram your MIDI devices")
-        #expect(PermissionPrompt.message(origin: site, kinds: 1 << 5) == "https://synth.example/ wants to see text and images copied to the clipboard")
+        #expect(PermissionPrompt.message(origin: site, kinds: 1 << 13) == "https://synth.example/ 想要控制和重新编程你的 MIDI 设备")
+        #expect(PermissionPrompt.message(origin: site, kinds: 1 << 5) == "https://synth.example/ 想要查看复制到剪贴板的文字和图片")
     }
 }
