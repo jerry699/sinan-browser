@@ -70,7 +70,7 @@ jobs:
         run: |
           git clone --depth 1 --branch b4999 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
           git clone --depth 1 --branch v1.9.6 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
-          scripts/build-llama.sh
+          LLAMA_NO_BLAS=1 scripts/build-llama.sh
           scripts/build-whisper.sh
       - name: Build (debug, ad-hoc signed)
         run: scripts/build.sh debug
