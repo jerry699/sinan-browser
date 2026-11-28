@@ -50,6 +50,25 @@ struct SharedBoostTests {
         #expect(back.stylesheet == mine.stylesheet)
     }
 
+    /// A moved small handle is part of the look, so it goes in the link; an untouched one stays out.
+    @Test func theSmallHandlesHueTravels() throws {
+        var mine = Boost(host: "example.com")
+        mine.hue = 0.3; mine.strength = 0.6; mine.darkHue = 0.42
+        mine.css = "a { color: red }"
+        let shared = SharedBoost(mine)
+        #expect(shared.darkHue == 0.42)
+        let link = try #require(shared.link)
+        let back = try #require(SharedBoost.from(link: link)).boost()
+        #expect(back.darkHue == 0.42)
+        let tint = try #require(back.tint)
+        #expect(abs(tint.darkHue - 0.42) < 1e-9)
+        mine.darkHue = BoostWheel.accentOffset
+        #expect(SharedBoost(mine).darkHue == nil)
+        var bad = shared
+        bad.darkHue = 2
+        #expect(bad.problems.contains("The secondary hue is out of range."))
+    }
+
     /// A link someone hand-made with a js key: it installs without it.
     @Test func ignoresAScriptInTheLink() throws {
         let json = #"{"v":1,"name":"Sneaky","host":"example.com","css":"body{color:red}","js":"alert(1)"}"#
@@ -139,6 +158,29 @@ struct SharedBoostTests {
 
     static let everyFieldSheet = """
         html { filter: invert(1) hue-rotate(180deg) sepia(0.4) hue-rotate(178deg) saturate(1.8) contrast(1.2) brightness(0.9) saturate(1.1) !important; }
+        img, video, picture, canvas, iframe, svg image { filter: invert(1) hue-rotate(180deg) !important; }
+        body, body * { font-family: "Georgia", sans-serif !important; }
+        html { zoom: 1.15 !important; }
+        body, body * { text-transform: uppercase !important; }
+        .ad, #promo { display: none !important; }
+        a { color: red }
+        """
+
+    /// The CSS Cra puts on a page for a shared boost: the engine draws its tint (#602), so no sepia or
+    /// hue-rotate filter for it. The share page's "Show the CSS" shows this string (boost-link.ts's
+    /// stylesheet with engineTints); it showed the old filter, and pasting that into a boost brought
+    /// #602's tinted images back (#704). Only the gallery's pictures, drawn without Cra's engine, keep it.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/704"))
+    func theCSSTheSiteShowsLeavesTheTintToTheEngine() throws {
+        let boost = try #require(SharedBoost.from(json: Data(Self.everyField.utf8)))
+        #expect(boost.boost().stylesheet(engineTints: true) == Self.everyFieldEngineSheet)
+        let tintOnly = try #require(SharedBoost.from(json: Data(#"{"v":1,"name":"Blue","host":"example.com","hue":0.6,"strength":0.4}"#.utf8)))
+        #expect(tintOnly.boost().stylesheet(engineTints: true) == "", "a boost that only tints puts no CSS on the page")
+        #expect(tintOnly.boost().tint != nil, "the engine draws its tint")
+    }
+
+    static let everyFieldEngineSheet = """
+        html { filter: invert(1) hue-rotate(180deg) contrast(1.2) brightness(0.9) saturate(1.1) !important; }
         img, video, picture, canvas, iframe, svg image { filter: invert(1) hue-rotate(180deg) !important; }
         body, body * { font-family: "Georgia", sans-serif !important; }
         html { zoom: 1.15 !important; }

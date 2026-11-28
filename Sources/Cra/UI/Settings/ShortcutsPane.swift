@@ -270,8 +270,11 @@ struct ShortcutRecorder: View {
     }
 
     private func handle(_ e: NSEvent) {
-        if e.keyCode == 53 { stop(); return }                               // esc
-        if e.keyCode == 51 || e.keyCode == 117 { bindings.setShortcuts([], for: action.id); stop(); return }  // ⌫ / ⌦
+        switch Shortcut.recordingStep(keyCode: e.keyCode, modifiers: e.modifierFlags.rawValue) {
+        case .cancel: stop(); return                                        // esc
+        case .clear: bindings.setShortcuts([], for: action.id); stop(); return  // ⌫ / ⌦
+        case .record: break                                                 // ⇧⎋ and the like too (#855)
+        }
         guard let s = Shortcut.from(event: e) else { return }
         bindings.setShortcuts([s], for: action.id)
         stop()
@@ -302,6 +305,7 @@ enum ShortcutDescriptions {
         "closeWindow": "Close the current window.",
         "closeTab": "Close the current tab.",
         "capturePage": "Take a screenshot of the page.",
+        ChatGPTCommandBar.actionID: "Compose a ChatGPT message in the Command Bar.",
         "print": "Print the page.",
         "copyURL": "Copy the page’s URL.",
         "copyURLMarkdown": "Copy the page’s title and URL as a Markdown link.",
@@ -332,8 +336,8 @@ enum ShortcutDescriptions {
         "flipSplitOrientation": "Switch the split view between side by side and stacked.",
         "nextSplitPane": "Focus the next split pane.",
         "previousSplitPane": "Focus the previous split pane.",
-        "nextSpace": "Switch to the next space.",
-        "previousSpace": "Switch to the previous space.",
+        "nextSpace": "Switch to the next space, or out of the Library to the first one.",
+        "previousSpace": "Switch to the previous space. On the first space, open the Library.",
         "editSpace": "Change the space’s name, emoji and theme.",
         "changeProfile": "Pick the profile the space’s sign-ins, cookies and extensions come from.",
         "deleteSpace": "Delete the current space.",

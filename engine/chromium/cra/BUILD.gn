@@ -11,6 +11,10 @@ source_set("core") {
     "downloads.mm",
     "fetch.h",
     "fetch.mm",
+    "history.h",
+    "history.mm",
+    "managed_extensions.h",
+    "managed_extensions.mm",
     "engine_main.mm",
     "page_protocol.h",
     "page_protocol.mm",
@@ -25,6 +29,7 @@ source_set("core") {
   deps = [
     "//base",
     "//chrome/browser",
+    "//chrome/browser/prefs:util",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/permissions/system",
     "//chrome/browser/ui/browser_window",
@@ -72,5 +77,9 @@ source_set("core") {
     "//components/sessions",
     "//extensions/browser",
     "//extensions/common:mojom",
+    "//components/history/core/browser",
+    "//components/keyed_service/core",
+    "//components/query_parser",
+    "//components/url_formatter",
   ]
 }

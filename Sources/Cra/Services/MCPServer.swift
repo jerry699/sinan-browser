@@ -31,6 +31,12 @@ final class MCPServer {
         get { settings.allowsHistory }
         set { settings.allowsHistory = newValue }
     }
+    /// How long the pill, the cursor and the row's face stay after an agent's last step
+    /// (Settings ▸ Advanced ▸ Agents, discussion #862).
+    var linger: MCPAgentPresence.Linger {
+        get { settings.linger }
+        set { settings.linger = newValue }
+    }
     /// For this run only (launch arguments of isolated test copies): agents allowed without a
     /// prompt (-mcpApprovesAgents YES), and page_evaluate on (-mcpAllowsScripts YES).
     @ObservationIgnored private let approvesAgents = MCPServer.launchArgument("mcpApprovesAgents")
@@ -217,6 +223,8 @@ final class MCPServer {
                 if self?.connections[owner] == client { self?.connections.removeValue(forKey: owner) }
                 self?.stoppedSessions.remove(owner)
                 self?.stopWorking(session: owner)
+                self?.closedPills.remove(owner)
+                self?.closedPillWindows = self?.closedPillWindows.filter { $0.value.session != owner } ?? [:]
                 self?.agentNames.removeValue(forKey: owner)
                 if self?.lastPillSession == owner { self?.lastPillSession = nil }
                 self?.identities.removeValue(forKey: client)
@@ -308,48 +316,43 @@ final class MCPServer {
                          woke: Bool = false, completion: @escaping ([String: Any]) -> Void) {
         guard let app else { completion(MCPProtocol.content("Browser is unavailable", failed: true)); return }
         if name == "tabs_list" {
-            // Sidebar order: spaces left to right, then favorites, pinned and today, folders inline.
-            // `active` is the tab on screen in the window the user last used.
-            let activeWindow = app.store.activeWindowID
-            let activeTab = app.store.selectedTabID(window: activeWindow)
-            var seen: Set<UUID> = []
-            var tabs: [[String: Any]] = []
-            for sid in app.store.spaceOrder {
-                guard let space = app.store.space(sid) else { continue }
-                let selected = Set(app.mainWindows.filter { !$0.isIncognito }.compactMap { app.store.selectedTabID(in: sid, window: $0.windowID) })
-                for (section, container) in [("favorites", space.favoritesContainerID), ("pinned", space.pinnedContainerID), ("today", space.todayContainerID)] {
-                    for item in app.store.tabs(under: container) where app.store.mcpTab(item.id) != nil && seen.insert(item.id).inserted {
-                        var row: [String: Any] = ["id": item.id.uuidString, "title": item.displayTitle, "url": item.tab?.url ?? "",
-                                                  "space": space.title, "section": section,
-                                                  "owned": ownedTabs[owner]?.contains(item.id) == true,
-                                                  "loaded": app.runtime(for: item.id).map { !$0.discarded } ?? false]
-                        var folders: [String] = []
-                        var parent = item.parentID
-                        while let id = parent, let folder = app.store.item(id), folder.isFolder {
-                            folders.insert(folder.displayTitle, at: 0); parent = folder.parentID
-                        }
-                        if !folders.isEmpty { row["folder"] = folders.joined(separator: " / ") }
-                        if selected.contains(item.id) { row["selected"] = true }
-                        if item.id == activeTab { row["active"] = true }
-                        if let url = item.tab?.url, !url.isEmpty, !MCPProtocol.navigable(url) { row["webPage"] = false }
-                        if let runtime = app.runtime(for: item.id), let dialog = MCPPage.dialog(of: runtime.browser) { row["dialog"] = dialog }
-                        tabs.append(row)
-                    }
-                }
+            completion((try? MCPCDP.content(sidebarTabs(owner: owner, app: app))) ?? MCPProtocol.content("Could not list tabs", failed: true))
+            return
+        }
+        if name == "tabs_search" {
+            let allTabs = sidebarTabs(owner: owner, app: app)
+            let query = arguments["query"] as! String
+            let matches = allTabs.filter { tab in
+                MCPTabSearch.matches(query: query,
+                                     title: tab["title"] as? String ?? "",
+                                     url: tab["url"] as? String ?? "",
+                                     space: tab["space"] as? String,
+                                     folder: tab["folder"] as? String,
+                                     section: tab["section"] as? String,
+                                     spaceFilter: arguments["space"] as? String,
+                                     folderFilter: arguments["folder"] as? String,
+                                     sectionFilter: arguments["section"] as? String)
             }
-            tabs += agentTabs.filter { $0.value.owner == owner }.map { id, tab in
-                ["id": id.uuidString, "title": tab.browser.currentTitle, "url": tab.browser.currentURL,
-                 "owned": true, "loaded": tab.browser.isCreated && !tab.browser.isClosed, "closed": tab.browser.isClosed, "windowless": true]
-            }
-            completion((try? MCPCDP.content(tabs)) ?? MCPProtocol.content("Could not list tabs", failed: true))
+            let limit = arguments["limit"] as? Int ?? 50
+            let returned = Array(matches.prefix(limit))
+            let result: [String: Any] = ["tabs": returned, "count": matches.count,
+                                         "returned": returned.count, "truncated": matches.count > returned.count]
+            completion((try? MCPCDP.content(result)) ?? MCPProtocol.content("Could not search tabs", failed: true))
             return
         }
         if name == "tab_open" {
+            let splitWithID = (arguments["splitWith"] as? String).flatMap(UUID.init(uuidString:))
+            let splitWindow = splitWithID.flatMap { id in
+                app.mainWindows.first { !$0.isIncognito && $0.browsers.runtime(for: id) != nil }
+            }
             guard canContinue(), let url = arguments["url"] as? String, MCPProtocol.navigable(url),
-                  let window = app.mainWindows.first(where: { $0.windowID == app.store.lastNormalWindowID && !$0.isIncognito }) else {
+                  let window = splitWindow ?? app.mainWindows.first(where: { $0.windowID == app.store.lastNormalWindowID && !$0.isIncognito }) else {
                 completion(MCPProtocol.content("Opening a tab requires an HTTP(S) URL and a normal browser window.", failed: true)); return
             }
             if arguments["windowless"] as? Bool == true {
+                guard splitWithID == nil else {
+                    completion(MCPProtocol.content("splitWith cannot be combined with windowless=true.", failed: true)); return
+                }
                 guard agentTabs.count < 8 else { completion(MCPProtocol.content("Eight agent tabs are retained. Use tabs_list and tab_close to release open or timed-out tabs.", failed: true)); return }
                 let id = UUID()
                 let profile = app.store.profilePath(space: app.store.focusedSpaceID(window: window.windowID))
@@ -362,12 +365,56 @@ final class MCPServer {
             // selected, so the agent works next to the user without taking their screen.
             let select = arguments["select"] as? Bool == true
             var space: UUID?
+            if arguments["splitWith"] != nil, splitWithID == nil {
+                completion(MCPProtocol.content("splitWith must be a tab ID from tabs_list.", failed: true)); return
+            }
+            if let splitWithID {
+                guard let anchor = app.store.mcpTab(splitWithID), let anchorURL = anchor.tab?.url,
+                      MCPProtocol.navigable(anchorURL), let anchorSpace = app.store.spaceID(ofItem: splitWithID, window: window.windowID) else {
+                    completion(MCPProtocol.content("splitWith must be an open web tab from tabs_list.", failed: true)); return
+                }
+                guard app.store.paneTabIDs(for: splitWithID).count < app.store.splitPaneLimit else {
+                    completion(MCPProtocol.content("Cannot Add New Pane: the split has reached its pane limit.", failed: true)); return
+                }
+                let visible = app.mainWindows.contains { candidate in
+                    guard !candidate.isIncognito,
+                          let candidateSpace = app.store.spaceID(ofItem: splitWithID, window: candidate.windowID) else { return false }
+                    return app.store.visiblePaneTabIDs(in: candidateSpace, window: candidate.windowID).contains(splitWithID)
+                }
+                guard !visible || select else {
+                    completion(MCPProtocol.content("splitWith is visible; pass select=true to change its view.", failed: true)); return
+                }
+                space = anchorSpace
+            }
             if let name = arguments["space"] as? String {
-                space = app.store.spaceOrder.first { app.store.space($0)?.title.localizedCaseInsensitiveCompare(name) == .orderedSame }
-                guard space != nil else {
+                let requestedSpace = app.store.spaceOrder.first { app.store.space($0)?.title.localizedCaseInsensitiveCompare(name) == .orderedSame }
+                guard let requestedSpace else {
                     let names = app.store.spaceOrder.compactMap { app.store.space($0)?.title }
                     completion(MCPProtocol.content("No space is called \(name). Spaces: " + names.joined(separator: ", ") + ".", failed: true)); return
                 }
+                if let splitWithID, !app.store.isInSpace(splitWithID, requestedSpace) {
+                    completion(MCPProtocol.content("space must match the space of splitWith.", failed: true)); return
+                }
+                space = requestedSpace
+            }
+            if let splitWithID {
+                // Without select=true nothing is picked: the window stays on what the user looks at, in
+                // whatever space, and the split shows when they next pick it.
+                guard let pane = app.store.openLinkInSplit(url, from: splitWithID, window: window.windowID, select: select),
+                      let split = app.store.splitContaining(pane.id) else {
+                    completion(MCPProtocol.content("Could not add the page to Split View.", failed: true)); return
+                }
+                ownedTabs[owner, default: []].insert(pane.id)
+                _ = window.browsers.ensureRuntime(for: pane.id)
+                if arguments["activate"] as? Bool == true {
+                    window.window?.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                let panes = app.store.paneTabIDs(for: pane.id).map(\.uuidString)
+                let result: [String: Any] = ["tabId": pane.id.uuidString, "status": "opened", "selected": select,
+                                             "splitId": split.id.uuidString, "paneTabIds": panes]
+                completion((try? MCPCDP.content(result)) ?? MCPProtocol.content("Could not describe Split View.", failed: true))
+                return
             }
             let tab = app.store.createTab(url: url, in: space, select: select, window: window.windowID)
             ownedTabs[owner, default: []].insert(tab.id)
@@ -406,14 +453,16 @@ final class MCPServer {
                 completion(MCPProtocol.content("Normal browser window unavailable.", failed: true)); return
             }
             if name == "tab_close" {
-                // Any today tab, like ⌘W (Reopen Closed Tab brings it back). Pinned tabs and
-                // favorites are the user's own layout and stay.
-                guard !app.store.isPinned(id), app.store.splitContaining(id) == nil else {
-                    completion(MCPProtocol.content("Pinned tabs, favorites and tabs in a split stay open; close only today tabs.", failed: true)); return
+                let inSplit = app.store.splitContaining(id) != nil
+                let isOwnedPane = inSplit && ownedTabs[owner]?.contains(id) == true
+                // Any today tab, like ⌘W (Reopen Closed Tab brings it back). An agent can close
+                // the pane it opened; pinned/favorite tabs and other split panes stay.
+                guard !app.store.isPinned(id), !inSplit || isOwnedPane else {
+                    completion(MCPProtocol.content("Pinned tabs, favorites and split panes this connection did not open stay open.", failed: true)); return
                 }
                 transfers.removeValue(forKey: id)?.close()
                 if let page = pages[id] { page.detach() }
-                window.closeTab(id)
+                if inSplit { window.closeSplitPane(id) } else { window.closeTab(id) }
                 ownedTabs[owner]?.remove(id); pages.removeValue(forKey: id); pointerPositions.removeValue(forKey: id)
             } else {
                 app.store.selectTab(id, window: window.windowID)
@@ -542,6 +591,48 @@ final class MCPServer {
         }
     }
 
+    private func sidebarTabs(owner: UUID, app: AppDelegate) -> [[String: Any]] {
+        // Sidebar order: spaces left to right, then favorites, pinned and today, folders inline.
+        // `active` is the tab on screen in the window the user last used.
+        let activeWindow = app.store.activeWindowID
+        let activeTab = app.store.selectedTabID(window: activeWindow)
+        var seen: Set<UUID> = []
+        var tabs: [[String: Any]] = []
+        for sid in app.store.spaceOrder {
+            guard let space = app.store.space(sid) else { continue }
+            let selected = Set(app.mainWindows.filter { !$0.isIncognito }.compactMap { app.store.selectedTabID(in: sid, window: $0.windowID) })
+            for (section, container) in [("favorites", space.favoritesContainerID), ("pinned", space.pinnedContainerID), ("today", space.todayContainerID)] {
+                for item in app.store.tabs(under: container) where app.store.mcpTab(item.id) != nil && seen.insert(item.id).inserted {
+                    var row: [String: Any] = ["id": item.id.uuidString, "title": item.displayTitle, "url": item.tab?.url ?? "",
+                                              "space": space.title, "section": section,
+                                              "owned": ownedTabs[owner]?.contains(item.id) == true,
+                                              "loaded": app.runtime(for: item.id).map { !$0.discarded } ?? false]
+                    var folders: [String] = []
+                    var parent = item.parentID
+                    while let id = parent, let folder = app.store.item(id), folder.isFolder {
+                        folders.insert(folder.displayTitle, at: 0); parent = folder.parentID
+                    }
+                    if !folders.isEmpty { row["folder"] = folders.joined(separator: " / ") }
+                    if let split = app.store.splitContaining(item.id), let index = split.children.firstIndex(of: item.id) {
+                        row["splitId"] = split.id.uuidString
+                        row["splitPaneIndex"] = index
+                        row["splitPaneCount"] = split.children.count
+                    }
+                    if selected.contains(item.id) { row["selected"] = true }
+                    if item.id == activeTab { row["active"] = true }
+                    if let url = item.tab?.url, !url.isEmpty, !MCPProtocol.navigable(url) { row["webPage"] = false }
+                    if let runtime = app.runtime(for: item.id), let dialog = MCPPage.dialog(of: runtime.browser) { row["dialog"] = dialog }
+                    tabs.append(row)
+                }
+            }
+        }
+        tabs += agentTabs.filter { $0.value.owner == owner }.map { id, tab in
+            ["id": id.uuidString, "title": tab.browser.currentTitle, "url": tab.browser.currentURL,
+             "owned": true, "loaded": tab.browser.isCreated && !tab.browser.isClosed, "closed": tab.browser.isClosed, "windowless": true]
+        }
+        return tabs
+    }
+
     private static func text(_ result: [String: Any]) -> String {
         ((result["content"] as? [[String: Any]])?.first { $0["type"] as? String == "text" }?["text"] as? String) ?? ""
     }
@@ -560,8 +651,13 @@ final class MCPServer {
     /// The agent's pill while it acts (AgentPill), at the bottom of the window that holds the tab it
     /// works in: its face, what it does ("Claude Code is clicking “Sign in”", MCPAgentPresence), and
     /// Take Over (⌘.), which stops it. Each step changes the words; it stays up while the agent works
-    /// and goes AgentPill.visibleFor after its last action. Reading never shows it.
+    /// and goes `linger` after its last action. Reading never shows it. In a tab the user isn't
+    /// looking at it is only the agent's face (MCPAgentPresence.pillLook, discussion #579).
     @ObservationIgnored private var pillShown: [UUID: UUID] = [:]
+    /// Sessions whose pill the user put away with its ×: it stays away until the session ends, and
+    /// ⌘. still takes over in the window the agent acts in (each window's session, until when).
+    @ObservationIgnored private var closedPills: Set<UUID> = []
+    @ObservationIgnored private var closedPillWindows: [UUID: (session: UUID, until: Date)] = [:]
     @ObservationIgnored private var lastPillText: [UUID: String] = [:]
     /// page_batch says nothing itself: each of its steps does (batch()).
     private static let quietTools: Set<String> = ["site_notes", "tab_show", "tab_move", "tab_update", "folder_create", "page_dialog", "page_batch"]
@@ -581,10 +677,34 @@ final class MCPServer {
         let text = MCPAgentPresence.activity(agent: agent, tool: tool, arguments: arguments, target: target, site: url.flatMap(MCPAgentPresence.site))
         // Another agent acting in the window takes the pill at once, so Take Over stops the one it names.
         if pillShown[window.windowID] != session || lastPillText[window.windowID] != text { CraLog.note("mcp pill: \(text)") }
+        lastPillSession = session
+        if closedPills.contains(session) {
+            closedPillWindows[window.windowID] = (session, Date().addingTimeInterval(linger.seconds))
+            return
+        }
         pillShown[window.windowID] = session
         lastPillText[window.windowID] = text
-        lastPillSession = session
-        window.showAgentPill(text) { [weak self] in self?.stopFromPill(session: session) }
+        let watched = id.map { window.agentTabIsWatched($0) } ?? false
+        let windowID = window.windowID
+        window.showAgentPill(text, tabWatched: watched, lingers: linger.seconds,
+                             takeOver: { [weak self] in self?.stopFromPill(session: session) },
+                             close: { [weak self] in self?.closePill(session: session, in: windowID) })
+    }
+
+    /// The pill's ×: away until this agent's session ends, without stopping it.
+    private func closePill(session: UUID, in windowID: UUID) {
+        CraLog.note("mcp pill: closed until the session ends")
+        closedPills.insert(session)
+        closedPillWindows[windowID] = (session, Date().addingTimeInterval(linger.seconds))
+        if pillShown[windowID] == session { pillShown.removeValue(forKey: windowID); lastPillText.removeValue(forKey: windowID) }
+    }
+
+    /// ⌘. in a window whose pill the user closed while its agent still acts there: Take Over all the same.
+    func takeOverClosedPill(in windowID: UUID) -> Bool {
+        guard let closed = closedPillWindows[windowID], closed.until > Date(), connections[closed.session] != nil else { return false }
+        closedPillWindows.removeValue(forKey: windowID)
+        stopFromPill(session: closed.session)
+        return true
     }
 
     // MARK: The face in the sidebar
@@ -594,7 +714,7 @@ final class MCPServer {
     @ObservationIgnored private var workingSweep: DispatchWorkItem?
 
     private func noteWorking(_ id: UUID, session: UUID) {
-        working[id] = (session, Date().addingTimeInterval(MCPAgentPresence.lingers))
+        working[id] = (session, Date().addingTimeInterval(linger.seconds))
         showWorking()
     }
 

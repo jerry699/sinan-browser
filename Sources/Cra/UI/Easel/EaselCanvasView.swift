@@ -57,13 +57,9 @@ final class EaselCanvasView: NSView {
     init(document: Easel) {
         self.document = document
         store = EaselFiles.store(document.id)
-        // A new easel is on disk from the start, so Library ▸ Easels lists it.
-        let isNew = !FileManager.default.fileExists(atPath: store.url.path)
-        if isNew { store.saveNow(document) }
         sheet = EaselSheetView(document: document)
         super.init(frame: .zero)
         EaselFiles.opened(self)
-        if isNew { EaselFiles.listChanged() }
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0, alpha: 0.5).cgColor
         scroll.drawsBackground = false
@@ -108,7 +104,13 @@ final class EaselCanvasView: NSView {
         let renamed = doc.title != document.title
         document = doc
         settle()
-        guard !EaselFiles.deleted.contains(doc.id) else { return }
+        if EaselFiles.deleted.contains(doc.id) {
+            // Drawn on after its file went (a reopened tab or Peek): the user is making it again.
+            guard !FileManager.default.fileExists(atPath: store.url.path) else { return }
+            EaselFiles.deleted.remove(doc.id)
+            EaselFiles.listChanged()
+        }
+        edited = true
         store.save(doc)
         if renamed {
             onTitle(doc.title)
@@ -116,8 +118,11 @@ final class EaselCanvasView: NSView {
         }
     }
 
-    /// A deleted easel's tab, closing, writes nothing back.
-    func saveNow() { if !EaselFiles.deleted.contains(document.id) { store.saveNow(document) } }
+    /// Changed since it opened: an easel with no file (a row whose easel was deleted) is written only then.
+    private var edited = false
+
+    /// Closing: what is not on disk yet. A deleted easel's tab writes nothing back.
+    func saveNow() { if edited, !EaselFiles.deleted.contains(document.id) { store.saveNow(document) } }
 
     func focus() { window?.makeFirstResponder(sheet) }
 
@@ -128,6 +133,9 @@ final class EaselCanvasView: NSView {
     }
 
     func closeLives() { sheet.closeLives() }
+
+    /// A change made elsewhere (sync's merge): shown as Undo shows a step, saved, and not undoable.
+    func replace(with easel: Easel) { sheet.replace(with: easel) }
 
     var sheetView: EaselSheetView { sheet }
 
@@ -213,6 +221,8 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
     var home: NSRect? { didSet { if home != oldValue { needsLayout = true } } }
     /// A tool's key was pressed (Arc: V, I, T, O, R, A, P), or Escape with a tool in hand.
     var onToolKey: (Easel.Tool) -> Void = { _ in }
+    /// Arc's capture editor (#851): the sheet lies over a capture, with no title.
+    var editsImage = false { didSet { title.isHidden = editsImage } }
     private let title = EaselTextField()
     private var texts: [UUID: NSTextField] = [:]
     /// The picked items, in the order they were picked (#580: ⌘- or ⇧-click and the drag box pick several).
@@ -327,6 +337,14 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
     }
 
     private func rect(_ r: Easel.Rect) -> NSRect { NSRect(x: r.x, y: r.y, width: r.width, height: r.height) }
+
+    /// Nothing picked and no text being typed: the drawing as it goes into a capture (#851).
+    func clearPicks() {
+        window?.makeFirstResponder(self)
+        picked = []
+        needsDisplay = true
+    }
+
     private func point(_ e: NSEvent) -> Easel.Point { let p = convert(e.locationInWindow, from: nil); return .init(p.x, p.y) }
 
     /// A change, undoable as `name` (Arc's undo labels: Move, Delete, Paste…).
@@ -365,6 +383,13 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
         syncLives()
     }
 
+    /// The easel as changed elsewhere: nothing before it can be undone, so ⌘Z never takes the change back.
+    func replace(with easel: Easel) {
+        history = EaselHistory()
+        dragBefore = nil
+        show(easel)
+    }
+
     @objc func undo(_ sender: Any?) {
         window?.makeFirstResponder(self)
         if let back = history.undo(document) { show(back) }
@@ -382,13 +407,22 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
         for item in document.items where picked.contains(item.id) {
             if Easel.resizes(item.kind) {
                 // Arc 1.172.1: a square 2 pt outline on the item's edge (#7FB8D6) and, at each corner,
-                // a 7.5 pt ring of it round a 3 pt dark dot (8 Nov 2026, 2x stills).
-                let r = rect(item.frame)
-                Self.arcSelection.setStroke()
-                let path = NSBezierPath(rect: r.insetBy(dx: -1, dy: -1))
-                path.lineWidth = 2
-                path.stroke()
-                // Corner handles only when it is picked alone: a group doesn't resize.
+                // a 7.5 pt ring of it round a 3 pt dark dot (8 Nov 2026, 2x stills). A text box keeps its rounded
+                // outline, with the same four dots at its corners and none on its edges (Arc 1.174.1, #680).
+                let isText: Bool = { if case .text = item.kind { return true }; return false }()
+                let r = isText ? rect(item.frame).insetBy(dx: -4, dy: -4) : rect(item.frame)
+                if isText {
+                    Self.selection.setStroke()
+                    let path = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
+                    path.lineWidth = 2
+                    path.stroke()
+                } else {
+                    Self.arcSelection.setStroke()
+                    let path = NSBezierPath(rect: r.insetBy(dx: -1, dy: -1))
+                    path.lineWidth = 2
+                    path.stroke()
+                }
+                // Handles only when it is picked alone: a group doesn't resize.
                 guard picked.count == 1 else { continue }
                 for c in [NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.maxX, y: r.minY), NSPoint(x: r.minX, y: r.maxY), NSPoint(x: r.maxX, y: r.maxY)] {
                     Self.arcSelection.setFill()
@@ -526,8 +560,9 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
                 if let hit, !picked.contains(hit.id) { dragStart = nil }
                 return
             }
-            // A corner of the picked picture or shape resizes it; anywhere else picks (and moves).
-            if let item = item(selected), Easel.resizes(item.kind), let corner = Easel.corner(of: item.frame, at: p) {
+            // A corner of the picked picture, shape or text, or anywhere along a shape's or text box's edge (Arc's
+            // ExtendedDragArea, #680), resizes it; anywhere else picks (and moves).
+            if let item = item(selected), Easel.resizes(item.kind), let corner = Easel.corner(of: item.frame, at: p, kind: item.kind) {
                 resizing = (corner, item.frame)
                 return
             }
@@ -609,8 +644,24 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
             soloOnUp = nil
             if dragBefore == nil { dragBefore = document }
             if let r = resizing, let id = selected, let i = document.items.firstIndex(where: { $0.id == id }) {
+                if case .text(let string, let size) = document.items[i].kind {
+                    // Arc: a corner or the left or right edge sets the width, the other side fixed, and the text
+                    // wraps at it; the top and bottom edges move nothing, as the height is the text's (#680).
+                    guard let w = Easel.resizedText(r.from, corner: r.corner, to: p) else { return }
+                    var item = document.items[i]
+                    item.frame = Easel.Rect(x: w.x, y: r.from.y, width: w.width, height: r.from.height)
+                    item.fixedWidth = true
+                    item.frame = fittedTextFrame(item, string: string, size: size)
+                    document.items[i] = item
+                    texts[id]?.frame = rect(item.frame)
+                    placeSizePill()
+                    placeColorPicker()
+                    needsDisplay = true
+                    return
+                }
                 let keep = Easel.keepsRatio(document.items[i].kind) || event.modifierFlags.contains(.shift)
                 document.items[i].frame = Easel.resized(r.from, corner: r.corner, to: p, keepRatio: keep)
+                placeColorPicker()
                 needsDisplay = true
                 return
             }
@@ -1108,7 +1159,9 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
         selected = item.id
         let easel = document.id
         EaselHooks.fetchLink?(url) { [weak self] meta, picture, icon in
-            guard let self, self.document.id == easel, let i = self.document.items.firstIndex(where: { $0.id == item.id }),
+            // Deleted meanwhile: filling the card in would make the easel again.
+            guard let self, self.document.id == easel, !EaselFiles.deleted.contains(easel),
+                  let i = self.document.items.firstIndex(where: { $0.id == item.id }),
                   case .link(var link) = self.document.items[i].kind else { return }
             link.title = meta?.title ?? link.title
             link.summary = meta?.summary
@@ -1334,16 +1387,17 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
     }
 
     /// `item`'s frame fitted to `string` at `size` in its font: as wide as its longest line up to Easel's
-    /// widest text, then wrapped, and as tall as its lines (#580).
+    /// widest text (#580), or the width a drag set (#680), wrapped there, and as tall as its lines.
     private func fittedTextFrame(_ item: Easel.Item, string: String, size: Double) -> Easel.Rect {
         let attrs: [NSAttributedString.Key: Any] = [.font: Self.font(item.style, size: size, title: false)]
         let longest = string.components(separatedBy: "\n").map { ($0 as NSString).size(withAttributes: attrs).width }.max() ?? 0
         // A last empty line counts: it is where the caret is after Return.
         let measured = (string.isEmpty || string.hasSuffix("\n") ? string + " " : string) as NSString
-        return Easel.fittedText(item.frame, longestLine: Double(longest), size: size) { width in
-            let bounds = NSSize(width: width - Easel.textPadding, height: .greatestFiniteMagnitude)
-            return Double(measured.boundingRect(with: bounds, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs).height) + 4
-        }
+        let width = Easel.textBoxWidth(item, longestLine: Double(longest))
+        let bounds = NSSize(width: width - Easel.textPadding, height: .greatestFiniteMagnitude)
+        let wrappedHeight = Double(measured.boundingRect(with: bounds, options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs).height) + 4
+        let height = Easel.textHeight(wrappedHeight: wrappedHeight, size: size)
+        return Easel.Rect(x: item.frame.x, y: item.frame.y, width: width, height: height)
     }
 
     /// The text box `id` fitted to its text again, after its font changed.
@@ -1358,13 +1412,19 @@ final class EaselSheetView: NSView, NSTextFieldDelegate, NSMenuItemValidation {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: tool == .pointer ? .arrow : (tool == .text ? .iBeam : .crosshair))
-        // The picked picture's or shape's corners: the diagonal resize cursors.
+        // The picked item's corners: the diagonal resize cursors. A shape's or text box's edges, along their whole
+        // length: left-right or up-down, as Arc shows them (a text box's top and bottom too, which move nothing, #680).
         guard tool == .pointer, let id = selected, let item = document.items.first(where: { $0.id == id }), Easel.resizes(item.kind) else { return }
-        let f = item.frame, g = Easel.cornerGrab
-        for (corner, x, y) in [(Easel.Corner.topLeft, f.x, f.y), (.topRight, f.x + f.width, f.y),
-                               (.bottomLeft, f.x, f.y + f.height), (.bottomRight, f.x + f.width, f.y + f.height)] {
-            let falling = corner == .topLeft || corner == .bottomRight
-            addCursorRect(NSRect(x: x - g, y: y - g, width: 2 * g, height: 2 * g), cursor: falling ? Self.nwseCursor : Self.neswCursor)
+        let f = rect(item.frame), g = CGFloat(Easel.cornerGrab)
+        if Easel.resizesFromEdges(item.kind) {
+            let tall = max(0, f.height - 2 * g), wide = max(0, f.width - 2 * g)
+            addCursorRect(NSRect(x: f.minX - g, y: f.minY + g, width: 2 * g, height: tall), cursor: .resizeLeftRight)
+            addCursorRect(NSRect(x: f.maxX - g, y: f.minY + g, width: 2 * g, height: tall), cursor: .resizeLeftRight)
+            addCursorRect(NSRect(x: f.minX + g, y: f.minY - g, width: wide, height: 2 * g), cursor: .resizeUpDown)
+            addCursorRect(NSRect(x: f.minX + g, y: f.maxY - g, width: wide, height: 2 * g), cursor: .resizeUpDown)
+        }
+        for (falling, x, y) in [(true, f.minX, f.minY), (false, f.maxX, f.minY), (false, f.minX, f.maxY), (true, f.maxX, f.maxY)] {
+            addCursorRect(NSRect(x: x - g, y: y - g, width: 2 * g, height: 2 * g), cursor: falling == isFlipped ? Self.nwseCursor : Self.neswCursor)
         }
     }
 
@@ -1427,6 +1487,9 @@ final class EaselToolbar: NSView {
     /// Arc's eighth button, Duplicate (AX "Duplicate"), after the tools.
     var onDuplicate: () -> Void = {}
     var tool: Easel.Tool = .pointer { didSet { needsDisplay = true } }
+    /// Arc's capture editor shows the seven tools only (#851): no Duplicate and no line before it.
+    var showsDuplicate = true { didSet { needsDisplay = true } }
+    private var shownItems: [EaselToolbarLayout.Item] { EaselToolbarLayout.items.filter { showsDuplicate || $0 != .duplicate } }
 
     private static let symbols: [Easel.Tool: String] = [
         .pointer: "cursorarrow", .image: "photo", .text: "character", .ellipse: "circle",
@@ -1454,10 +1517,12 @@ final class EaselToolbar: NSView {
     override func draw(_ dirtyRect: NSRect) {
         Self.bar.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill()
-        Self.line.setFill()
-        EaselToolbarLayout.divider.fill()
+        if showsDuplicate {
+            Self.line.setFill()
+            EaselToolbarLayout.divider.fill()
+        }
         let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .semibold).applying(.init(paletteColors: [Self.glyph]))
-        for item in EaselToolbarLayout.items {
+        for item in shownItems {
             let r = EaselToolbarLayout.rect(of: item)
             let look = EaselToolbarLayout.look(of: item, picked: tool, hovered: hovered)
             if look.fill != .none {
@@ -1482,7 +1547,7 @@ final class EaselToolbar: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        switch EaselToolbarLayout.item(at: convert(event.locationInWindow, from: nil)) {
+        switch shownItem(at: convert(event.locationInWindow, from: nil)) {
         case .tool(let t)?: onPick(t)
         case .duplicate?: onDuplicate()
         case nil: break
@@ -1500,7 +1565,11 @@ final class EaselToolbar: NSView {
     override func mouseExited(with event: NSEvent) { hovered = nil }
 
     /// The pointer at `point` (the toolbar's coordinates), or gone (nil). Also the test hook's way in.
-    func hover(at point: NSPoint?) { hovered = point.flatMap { EaselToolbarLayout.item(at: $0) } }
+    func hover(at point: NSPoint?) { hovered = point.flatMap { shownItem(at: $0) } }
+
+    private func shownItem(at point: NSPoint) -> EaselToolbarLayout.Item? {
+        EaselToolbarLayout.item(at: point).flatMap { shownItems.contains($0) ? $0 : nil }
+    }
 
     /// For cra.log: the picked tool, the button under the pointer and each letter that shows.
     var debugLine: String {

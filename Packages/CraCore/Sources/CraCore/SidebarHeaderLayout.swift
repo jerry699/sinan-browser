@@ -29,6 +29,17 @@ public enum SidebarHeaderLayout {
         return (0..<3).map { (first + Double($0) * (size + gap), size) }
     }
 
+    /// How far a header button takes clicks and hover past its drawn 32 pt box, left and right: half of the 2 pt
+    /// gap Arc leaves between them, so the pointer moving from one to the next is always over one (#818). Nothing
+    /// draws there; the 28 pt narrow boxes touch already and take none.
+    public static let hitOutset: Double = 1
+
+    /// The horizontal stretches the regular layout's buttons take clicks over (toggle, ←, →, ↻), with `hitOutset`.
+    public static func hitSpans(width: Double, afterLights: Double, developer: Bool = false) -> [ClosedRange<Double>] {
+        let toggle = toggleX(width: width, afterLights: afterLights, developer: developer)
+        return ([(toggle, 32.0)] + navButtons(width: width).map { ($0.x, $0.size) }).map { ($0.0 - hitOutset)...($0.0 + $0.1 + hitOutset) }
+    }
+
     /// The toggle's x in the regular layout: right after the traffic lights (`afterLights`),
     /// or further left when ← comes within 2 pt of it. On a Developer Mode page Arc's ← sits
     /// 1 pt further left (Arc: 71 beside ← at 105 for 212 pt).
@@ -67,6 +78,16 @@ public enum SidebarMoreMenu {
     /// (measured (81, 70, 26) on the same theme).
     public static func highlight(shadedDark ink: RGB) -> RGB {
         clamped(RGB.black.mixed(with: ink, 0.15).mixed(with: ink, 0.41).mixed(with: .white, 0.13))
+    }
+
+    /// The menu's colours (#822). It is Arc's ArcMenu, the + menu's (the same measured fill and hover on both spaces):
+    /// in Light mode the space's light palette with black titles (ArcMenuTones), in Dark mode the tones measured above,
+    /// white titles and shortcuts at white 30 %.
+    public static func tones(theme: SpaceTheme, dark: Bool) -> ArcMenuTones {
+        guard dark else { return ArcMenuTones(theme: theme, dark: false) }
+        let ink = theme.shadedDark
+        return ArcMenuTones(fill: fill(shadedDark: ink), hover: highlight(shadedDark: ink), separator: highlight(shadedDark: ink),
+                            shortcut: RGB(1, 1, 1).mixed(with: fill(shadedDark: ink), 0.7))
     }
 
     private static func clamped(_ c: RGB) -> RGB {

@@ -1354,3 +1354,51 @@
 "司南 kept working while the Mac was idle" = "Mac 空闲时司南保持工作";
 "司南 uses %@ of memory" = "司南占用 %@ 内存";
 "Select some text first" = "请先选中文字";
+
+// ── 上游 410-commit 合并新增（2026-11-28，Max 面板/隐私/链接/高级/插件）──
+"Enable Max" = "启用 Max";
+"Turn Off Max" = "关闭 Max";
+"Turn On All" = "全部开启";
+"Turn On Max" = "开启 Max";
+"Ask on Page" = "页内提问";
+"5-Second Previews" = "五秒预览";
+"Let Cra do more for you with Max, so you can do less. Power up your browsing with Apple Intelligence on this Mac and spend time on the things that matter — on or off screen." = "让 Max 替你分担：用这台 Mac 上的 Apple Intelligence 为浏览加速，把时间留给真正重要的事——屏上屏外皆是。";
+"Press Command + F on any page to ask a question and let Max answer it for you in seconds." = "在任意页面按 Command + F 提问，Max 几秒内为你作答。";
+"Instant Links sends what it searches for to your search engine, as a search would." = "即时链接会把搜索词发给你的搜索引擎，与一次普通搜索相同。";
+"ChatGPT in the Command Bar sends what you ask to chatgpt.com, as opening the page would." = "命令栏中的 ChatGPT 会把你的提问发到 chatgpt.com，与打开该网页相同。";
+"Instant summaries appear when you hover over links on certain websites (Google results, X and Hacker News). Or hold Shift while hovering to preview any link." = "在部分网站（Google 结果、X、Hacker News）悬停链接即显示摘要；按住 Shift 悬停可预览任意链接。";
+"Instant Links" = "即时链接";
+"Press Shift + Enter for any web search to instantly open the top result. You can also search multiple queries!" = "任意网页搜索按 Shift + Enter 直接打开第一条结果；也可以一次搜多个词！";
+"ChatGPT in the Command Bar" = "命令栏中的 ChatGPT";
+"Block additional advertising and tracking servers." = "拦截额外的广告与跟踪服务器。";
+"Block third-party ad and tracker domains with this offline list." = "用这份离线名单拦截第三方广告与跟踪域名。";
+"Blocking" = "拦截";
+"Connection security" = "连接安全";
+"DNS over HTTPS" = "加密 DNS（DoH）";
+"Enable AdAway" = "启用 AdAway";
+"Enable Anudeep’s Blacklist" = "启用 Anudeep 黑名单";
+"Requests to known ad and tracker domains are cancelled, unless the domain belongs to the site you’re on. To let one site load everything, turn it off in that site’s menu in the address bar." = "已知的广告与跟踪域名请求会被取消（当前站点自己的域名除外）。要让某个站点完整加载，在地址栏的站点菜单里关掉它。";
+"Standard" = "标准";
+"Strict" = "严格";
+"Choose where links open inside Cra." = "选择链接在司南内的打开位置。";
+"Links you click in other apps open in Cra." = "其他应用里点开的链接由司南打开。";
+"Search or Enter URL…" = "搜索或输入网址…";
+"Share…" = "分享…";
+"Customize Page…" = "自定义页面…";
+"Folders" = "文件夹";
+"GitHub Pull Requests" = "GitHub 拉取请求";
+"Hide site names" = "隐藏站点名称";
+"How long the agent’s pill, cursor and face stay after its last step, so they don’t come and go while it thinks." = "智能体完成最后一步后，胶囊、光标与头像保留多久，避免它思考时忽隐忽现。";
+"Keep an agent on screen for" = "智能体在屏幕上保留";
+"Temperature" = "温度";
+"How much room is left around your pages, from 1 pt to Arc’s 10 pt. Edge to edge takes it away." = "页面四周留白多少（1 至 10 点）。选贴边则完全去掉。";
+"Pages fill the window, with no margin around them and square corners, unless Rounded corners is on." = "页面铺满窗口、四周无留白且为直角，除非开启圆角。";
+"This plugin can load pages from these sites signed in as you, with the profile of the Space its folder is in, and can send what it reads to any of them:
+
+" = "此插件能以你的身份、用它所在分区档案加载这些站点的页面，并把读到的内容发给其中任意站点：
+
+";
+"not available" = "不可用";
+"%@ %% CPU · %@" = "%@ %% CPU · %@";
+"This plugin can load pages from these sites signed in as you, with the profile of the Space its folder is in, " = "此插件能以你的身份、用它所在分区的档案登录这些站点加载页面，";
+"and can send what it reads to any of them:\n\n" = "并把读到的内容发给其中任意站点：\n\n";

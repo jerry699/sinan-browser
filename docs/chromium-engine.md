@@ -357,3 +357,45 @@ switch, idle CPU, idle wakeups: "Speed, 14 Nov" below) are fixed ("15 Nov, -7").
   `CraPageDialogHost` (cra-page-dialogs.patch) is the page's own data, so it told its dialogs it was going only
   after the page's parts were gone, and the prompt's `LoginHandler::CancelAuth` used them. It lets them go in
   `WebContentsDestroyed` now (scenario `page-dialog-sign-in-tab-closed`). Both scenarios crash on -1.
+- 24 Nov 2026: **engine-159.0.8154.45-1**, Chrome 159.0.8154.45 (from engine-159.0.8154.13-21) for CVE-2026-134401
+  (critical, Chrome Variations: 159.0.8154.13 lacked "[M159] Disable VariationsService HTTP fallback by default", #750),
+  a patch release on the same branch: every patch applied unchanged. It also has #730's two engine parts. A profile's
+  history is no longer deleted after 90 days (`cra-history-no-expiry.patch`: Chrome's `HistoryBackend` started
+  `ExpireHistoryBackend` with `kExpireDaysThreshold`; Arc keeps the whole history), and `+searchHistory:` runs a text
+  search of a profile's history for ⌘T (`cra/history.mm`: a `HistoryDBTask` that reads only the matching `urls` rows,
+  since `QueryHistory` also reads every visit of every match, which takes seconds for one letter on a long history;
+  a search a newer keystroke overtook skips its scan). Scenario `command-bar-whole-history`.
+- 24 Nov 2026: **engine-159.0.8154.45-2**, the window a page sees (`cra-page-window-bounds.patch`). Chrome gave a page
+  Cra hosts its whole NSWindow as its window, so `outerWidth - innerWidth` was the sidebar (338–345 pt). Discord reads
+  more than 160 as DevTools being open and takes its sign-in token out of localStorage until its page goes, so every
+  other Discord tab opened signed out while one was open. `RenderWidgetHostViewMac::GetBoundsInScreen` now gives a
+  page without a parent `ui::Layer` (only Chrome's own windows set one) a window from the window's top to the page's
+  bottom, as wide as the page, and `OnBoundsInWindowChanged` sends the screen rects again when the page moves in its
+  window (⌘S). Scenario `page-window-size` (fails on engine-159.0.8154.13-21: first dx=338, second tab signed out).
+- 25 Nov 2026: **engine-159.0.8154.45-3**, Delete Suggestion in ⌘T (#779). `+deleteHistoryURL:profilePath:` deletes a
+  page from a profile's history, every visit (`cra/history.mm`: `HistoryService::DeleteURLs`, as Chrome's omnibox does
+  for a deleted history row). It runs on the history thread before any later `+searchHistory:`, so the bar's next
+  search doesn't find the page. Scenario `command-bar-delete-suggestion`.
+- 25 Nov 2026: **engine-159.0.8154.45-4**, "Always allow <origin> to open links of this type" (#785):
+  `cra-links.patch` passes the initiating origin to `ExternalProtocolHook`, and the bridge says which origin started an
+  app link and whether Chrome may remember it (`ExternalProtocolHandler::GetBlockState`/`SetBlockState`). Scenario
+  `app-link-always-allow`.
+- 25 Nov 2026: **engine-159.0.8154.45-6** (-5 was published the same night with the Mission Control change on every
+  hidden host window, a profile's page host too; that host is the parent of extension popups, and
+  `extension-open-popup` then failed 2 of 3 runs against 2 of 2 on -4, so -6 keeps the change to DevTools windows
+  and -5 was never pinned). DevTools take the keys back after the element picker (#778, PR #812 by
+  rushelex). The frontend hooks report `InspectorFrontendHost.bringToFront` (`kDevToolsDockScript`) and the picker's
+  action turning off (`kDevToolsPanelScript`) as `__cra_devtools_keys`, and the bridge passes it on as
+  `browserDevToolsWantsKeys:`: a pick clicks the page, which kept the keys until DevTools were clicked. And
+  Chrome's never-seen DevTools window (`StrayWindows`, `TYPE_DEVTOOLS`) is transient and out of the ⌘` cycle, so
+  Mission Control no longer shows one empty window per page with DevTools. Scenario `devtools-picker-keys` (fails on -4: `chromeExposed=1`,
+  `focus=page` after the pick).
+- 26 Nov 2026: **engine-159.0.8154.45-11** (on -10's layer), no download arrow of Chrome's over a page Cra hosts (#774,
+  `cra-download-started-animation.patch`). A download from a link ran Chrome's `DownloadBubbleStartedAnimationViews`,
+  aimed at the download button of a toolbar nobody sees. Its popup widget is made without bounds and shown before its
+  first frame moves it, so its window came up at the top left of the primary display, and with Cra on a second
+  display and another app full screen on the primary one, macOS switched that display to a desktop on every download.
+  Cra already throws Arc's download flight. The bridge also counts every `NativeWidgetMacNSWindow` ordered onto the
+  screen and the ones that come up off every Cra window (`chrome=` `chrome-away=` `last-away=` in
+  `cra://debug?pageWindows=`). Scenario `download-arrow-off-primary` (fails without the patch: `chrome-away=1
+  last-away=NativeWidgetMacNSWindow@0,1439,1x1`).

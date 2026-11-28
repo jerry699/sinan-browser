@@ -16,6 +16,8 @@ enum FloatingSidebarTests {
         let shell = ShellView(frame: NSRect(origin: .zero, size: window.frame.size))
         window.contentView = shell
         let sidebar = FloatingSidebarController(shell: shell, window: window, palette: { SpacePalette() })
+        // No mouse button held, whatever the Mac's real mouse is doing: another test's drag made the hide checks fail.
+        sidebar.pressedMouseButtons = { 0 }
         sidebar.sidebarHidden = { true }
         // Do not install the pointer timer or post input events. The real controller
         // and AppKit animation completions run with an offscreen disposable panel.
@@ -56,11 +58,26 @@ enum FloatingSidebarTests {
         edge?.onResize?(20, 15)
         expect(began && got.map { $0 == 20 && $1 == 15 } == true && shell.sidebarHost.frame.width == 348,
                "the floating edge hands the drag's start, translation and speed to the shell")
+        // Double-click restores Arc's default (228 pt snap) width through the shell (#819).
+        var reset = false
+        shell.resizeHandle.onDoubleClick = {
+            reset = true
+            shell.sidebarWidth = 228
+        }
+        shell.sidebarWidth = 400
+        edge?.onDoubleClick?()
+        let resetPanelWidth = panel.frame.width
+        expect(reset && shell.sidebarWidth == 228 && shell.sidebarHost.frame.width == 228
+               && abs(edge!.frame.maxX - shell.sidebarHost.frame.maxX) < 0.5,
+               "double-clicking the floating edge resets width through the shell")
+        expect(abs(resetPanelWidth - (228 + FloatingSidebarGeometry.margin)) < 0.5,
+               "the floating panel follows the reset width")
         shell.resizeHandle.onResize?(0, 0)
         shell.resizeHandle.onBegin = nil
         shell.resizeHandle.onResize = nil
         shell.resizeHandle.onDrag = nil
         shell.resizeHandle.onEnd = nil
+        shell.resizeHandle.onDoubleClick = nil
 
         // Multiple animation completions can be queued; only the latest show owns it.
         sidebar.hide(animated: true)
@@ -109,6 +126,7 @@ enum FloatingSidebarTests {
         dockingARevealedSidebarCanBeSuperseded(window: window, sidebar: sidebar, panel: panel)
         comesOutOnTheRight(window: window, sidebar: sidebar, shell: shell)
         aStillPointerWaitsToMove(window: window, sidebar: sidebar)
+        aPointerInsideTheSidebarBringsNothingOut(window: window, sidebar: sidebar)
 
         // #136: the pointer is sampled only while Cra is the active app.
         sidebar.install()
@@ -161,6 +179,41 @@ enum FloatingSidebarTests {
         sample(CGPoint(x: edge.x, y: edge.y + 3), at: 903.2)
         expect(sidebar.isShown && sidebar.stillPointer == nil, "moved inside the strip, it comes out after the usual wait")
         sidebar.hide(animated: false)
+        sidebar.now = { ProcessInfo.processInfo.systemUptime }
+    }
+
+    // promise: #679
+    /// The reporter's steps: the floating sidebar out, the pointer moved in over it (not left at the
+    /// screen's edge), into the Library and out with two fingers. The sidebar goes with the pointer
+    /// resting over where it was; only the edge strip (or a throw past the window's edge) brings it out
+    /// again, and cra.log now says what did, with the pointer's place, so a report can show it.
+    @MainActor
+    private static func aPointerInsideTheSidebarBringsNothingOut(window: NSWindow, sidebar: FloatingSidebarController) {
+        var clock: TimeInterval = 950
+        sidebar.now = { clock }
+        sidebar.keyWindow = { window }
+        sidebar.hide(animated: false)
+        CraLog.notes = []
+        let inside = CGPoint(x: 150, y: sidebar.shell.bounds.midY)
+        func sample(_ p: CGPoint, at t: TimeInterval) {
+            clock = t
+            sidebar.pointerSample(at: p)
+        }
+        sidebar.waitForPointerToMove(from: inside)
+        for t in [950.0, 950.3, 951.0, 952.0] { sample(inside, at: t) }
+        expect(!sidebar.isShown, "the pointer resting over where the sidebar was brings nothing out")
+        for (i, x) in [150.0, 120, 90, 60, 30].enumerated() { sample(CGPoint(x: x, y: inside.y), at: 953 + Double(i) * 0.1) }
+        expect(!sidebar.isShown && !CraLog.notes.contains { $0.hasPrefix("floating sidebar out") },
+               "moving over the page, short of the edge strip, brings nothing out either")
+        let edge = CGPoint(x: 3, y: inside.y)
+        sample(edge, at: 954)
+        sample(edge, at: 954.3)
+        expect(sidebar.isShown, "the edge strip brings it out after its wait")
+        expect(CraLog.notes.contains { $0.hasPrefix("floating sidebar out: the edge strip, pointer at 3,") },
+               "cra.log says the strip brought it out, and where the pointer was: \(CraLog.notes)")
+        sidebar.hide(animated: true)
+        expect(CraLog.notes.last == "floating sidebar in", "and that it went in")
+        drainAnimations()
         sidebar.now = { ProcessInfo.processInfo.systemUptime }
     }
 
@@ -301,6 +354,12 @@ enum FloatingSidebarTests {
         sample(120, mid, at: 501.1)
         expect(sidebar.isShown, "coming back in over the sidebar keeps it")
         sample(-100, mid, at: 501.2)
+        // A held button keeps it out (a drag); this check used to read the Mac's real mouse, so another test's drag
+        // running at the same time made the next one fail.
+        sidebar.pressedMouseButtons = { 1 }
+        sample(-100, shell.bounds.maxY + 30, at: 501.25)
+        expect(sidebar.isShown, "while a button is held it stays out")
+        sidebar.pressedMouseButtons = { 0 }
         sample(-100, shell.bounds.maxY + 30, at: 501.3)
         expect(!sidebar.isShown, "above the window's top it goes, as in Arc")
         sidebar.hide(animated: false)
@@ -726,9 +785,16 @@ enum FloatingSidebarTests {
 
 // Lightweight dependencies for compiling the production controller without CEF.
 // They provide layout/theme data only; lifecycle and animation code is not copied.
+/// cra.log, kept for the checks.
+enum CraLog {
+    static var notes: [String] = []
+    static func note(_ s: String) { notes.append(s) }
+}
+
 struct SpacePalette {
     var vibrant = false
     var isDark = false
+    var glass = false
 }
 
 final class PaletteBackgroundView: NSView {
@@ -758,6 +824,7 @@ final class ResizeHandleView: NSView {
     var onBegin: (() -> Void)?
     var onResize: ((_ translation: CGFloat, _ speed: CGFloat) -> Void)?
     var onEnd: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
     var side: SidebarSide = .left
 }
 
@@ -770,6 +837,7 @@ final class ShellView: NSView {
     var edgeToEdge = false
     /// The app's: edge to edge, or full screen with the sidebar hidden (#315).
     var fillsWindow: Bool { edgeToEdge }
+    var pageMargin = PageMargin.arc
     var sidebarDetached = false
     var floatingSidebar = false
     var sidebarSide: SidebarSide = .left

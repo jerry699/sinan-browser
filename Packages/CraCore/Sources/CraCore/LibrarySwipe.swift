@@ -10,8 +10,14 @@ import Foundation
 /// swipe's rubber band, release rule and spring.
 /// The reveal is 0 on the space, 1 with the Library in, past 1 while it rubber-bands.
 public enum LibrarySwipe {
-    /// The space swipe's settle (Dia's zero-bounce spring, perceptual duration 0.4 s).
-    public static let omega: CGFloat = 2 * .pi / 0.4
+    /// The space swipe's settle, which the Library's shares: Arc's PageSwipeController spring, critically damped
+    /// at ω ≈ 30.6 rad/s (SwiftUI's response 0.205), within 1 % of its travel in about 0.2 s (docs/arc-reverse-
+    /// engineering.md, "Swiping into the Library"). Cra settled on Dia's (perceptual duration 0.4 s), half as fast:
+    /// in a side-by-side recording on #613 Arc's swipes settled in ~215 ms and Cra's took ~330 ms.
+    public static let omega: CGFloat = 2 * .pi / CGFloat(response)
+    /// The spring's response (SwiftUI's, a CASpringAnimation's perceptual duration): the window tint settles on it
+    /// too, with the strip (it stayed on Dia's 0.4 s and trailed the sidebar after #613's first fix).
+    public static let response: TimeInterval = 0.205
     /// A release faster than this (pages per second) goes its way whatever the position.
     public static let flickSpeed: CGFloat = 0.8
 
@@ -78,6 +84,45 @@ public enum LibrarySwipe {
         max(inset, sidebarWidth(reveal: r, base: 0, library: library))
     }
 
+    // MARK: The Library button
+    //
+    // Arc slides the Library in when its button (or ⇧⌘L) opens it and out when the button or the Library's back
+    // arrow leaves it, on the swipe's motion, from a hidden sidebar too: in from the window's edge under the
+    // floating sidebar, and out to the hidden sidebar with no tab list on the way (#726, the reporter's recording of
+    // Arc: one eased-out motion of about 320 ms either way).
+
+    /// Where the sidebar is when the button is pressed.
+    public enum ButtonSidebar: Equatable, Sendable {
+        /// Docked beside the page, the Library's own or the tab list's.
+        case docked
+        /// Hidden, its floating panel out over the page or not.
+        case hidden
+        /// None to slide beside: a page full screen for its own (a video's).
+        case none
+    }
+
+    /// How the button moves the Library.
+    public enum ButtonMotion: Equatable, Sendable {
+        /// The swipe's spring to reveal 0 or 1 in the docked sidebar, from where it shows.
+        case slide(to: CGFloat)
+        /// In from the window's edge under the floating sidebar, landing docked.
+        case slideFromHidden
+        /// At once.
+        case show
+        case close
+    }
+
+    /// The Library button, ⇧⌘L and the Library's back arrow. A swipe in progress keeps the fingers in charge: the
+    /// button lands it at once.
+    public static func buttonMotion(opening: Bool, sidebar: ButtonSidebar, swiping: Bool) -> ButtonMotion {
+        guard !swiping else { return opening ? .show : .close }
+        switch sidebar {
+        case .docked: return .slide(to: opening ? 1 : 0)
+        case .hidden: return opening ? .slideFromHidden : .close
+        case .none: return opening ? .show : .close
+        }
+    }
+
     /// Where a released swipe settles: a flick goes its way, else past halfway opens.
     /// `velocity` is in reveals per second, + toward the Library.
     public static func target(reveal r: CGFloat, velocity: CGFloat) -> CGFloat {
@@ -107,5 +152,28 @@ public enum LibrarySwipe {
         let x = settle(from: r, velocity: velocity, to: target, at: t)
         let speed = abs(x - settle(from: r, velocity: velocity, to: target, at: t - 0.01)) * 100 * width
         return abs(x - target) * width < 0.25 && speed < 5
+    }
+}
+
+/// When a settle's time starts: at the first frame it draws, as if it had begun one frame before (#613). A release
+/// switches the space, which can keep the main thread from drawing for a frame or two; a spring timed from the
+/// release had run that long when it first drew, so the strip stood still for a frame and then jumped (25 to 46
+/// points in one frame on the reporter's recording), where Arc's picks up speed from where the fingers left it.
+public struct SettleClock: Sendable, Equatable {
+    /// When the settle was asked for, and when its time counts from once it has drawn.
+    public let started: TimeInterval
+    public private(set) var origin: TimeInterval?
+
+    public init(started: TimeInterval) { self.started = started }
+
+    /// The settle's time for the frame shown at `frame` (a display link's target timestamp), `interval` apart.
+    public mutating func elapsed(atFrame frame: TimeInterval, interval: TimeInterval) -> TimeInterval {
+        if origin == nil { origin = frame - max(0, min(interval, frame - started)) }
+        return max(0, frame - origin!)
+    }
+
+    /// The settle's time now, outside a frame (turning it around): none before it has drawn.
+    public func elapsed(now: TimeInterval) -> TimeInterval {
+        origin.map { max(0, now - $0) } ?? 0
     }
 }

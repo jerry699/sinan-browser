@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Observation
 
 /// Favicons keyed by host or by a tab's own icon (FaviconKey). Chromium hands us PNG bytes through the bridge;
@@ -14,23 +15,31 @@ final class FaviconCache {
     /// FaviconKey.key(for:), for code written before it moved to CraCore (#51).
     static func key(for urlString: String) -> String? { FaviconKey.key(for: urlString) }
 
+    /// The icon under `key`, else under what it falls back to: a tab's own icon not on disk (cleared, or
+    /// saved by an incognito page) shows its section's (#909), then its site's (#211).
     func image(forKey key: String?) -> NSImage? {
         guard let key else { return nil }
-        if let img = images[key] { return img }
-        if !attemptedDiskLoad.contains(key) {
-            attemptedDiskLoad.insert(key)
-            let file = AppPaths.favicons.appendingPathComponent(Self.fileName(key))
-            if let img = NSImage(contentsOf: file) {
-                images[key] = img
-                return img
-            }
-        }
-        // A tab's own icon not on disk (cleared, or saved by an incognito page): the site's (#211).
-        let site = FaviconKey.siteKey(of: key)
-        return site == key ? nil : image(forKey: site)
+        return FaviconKey.chain(of: key).lazy.compactMap { self.storedImage($0) }.first
     }
 
-    func image(for urlString: String) -> NSImage? { image(forKey: FaviconKey.key(for: urlString)) }
+    /// Whether the row reading `key` has its own icon, not only its host's, which any page on the host
+    /// overwrites (#909): a row without asks SiteIconLoader for its section's.
+    func hasOwnImage(forKey key: String?) -> Bool {
+        guard let key else { return false }
+        return FaviconKey.ownKeys(of: key).contains { storedImage($0) != nil }
+    }
+
+    /// What is stored under exactly `key`, in memory or on disk.
+    func storedImage(_ key: String) -> NSImage? {
+        if let img = images[key] { return img }
+        guard !attemptedDiskLoad.contains(key) else { return nil }
+        attemptedDiskLoad.insert(key)
+        guard let img = NSImage(contentsOf: AppPaths.favicons.appendingPathComponent(Self.fileName(key))) else { return nil }
+        images[key] = img
+        return img
+    }
+
+    func image(for urlString: String) -> NSImage? { image(forKey: FaviconKey.sectionKey(for: urlString)) }
 
     private var dominant: [String: String] = [:]
     private var selectionPalettes: [String: [String]] = [:]
@@ -175,5 +184,44 @@ final class FaviconCache {
     static func fileName(_ key: String) -> String {
         let safe = key.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? String($0) : "_" }.joined()
         return safe + ".png"
+    }
+
+    /// The most pixels a side of an icon file may claim: a small file can claim 40000 and cost a GB.
+    nonisolated static let largestSource = 1024
+
+    /// An icon file's bytes (another browser's store, a site) as a PNG at most `side` px on its long
+    /// side. ImageIO shrinks a bitmap without decoding it at full size; AppKit draws an SVG small.
+    nonisolated static func png(_ data: Data, side: Int = 64) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0 else {
+            return NSImage(data: data).flatMap { png($0, side: CGFloat(side)) }
+        }
+        // An .ico holds several sizes: the widest one not claiming too many pixels.
+        let sizes = (0..<CGImageSourceGetCount(source)).compactMap { i -> (index: Int, width: Int)? in
+            guard let p = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any],
+                  let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int,
+                  w > 0, h > 0, max(w, h) <= largestSource else { return nil }
+            return (i, w)
+        }
+        guard let pick = sizes.max(by: { $0.width < $1.width }) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: side,
+                                        kCGImageSourceCreateThumbnailWithTransform: true]
+        guard let thumb = CGImageSourceCreateThumbnailAtIndex(source, pick.index, options as CFDictionary) else { return nil }
+        return NSBitmapImageRep(cgImage: thumb).representation(using: .png, properties: [:])
+    }
+
+    /// An image as a PNG at most `side` px on its long side, drawn at that size: for an image made in
+    /// code or an SVG, which can declare any size (drawn at it, one ran a 0.1.43 import out of memory).
+    nonisolated static func png(_ img: NSImage, side: CGFloat = 64) -> Data? {
+        guard img.size.width > 0, img.size.height > 0 else { return nil }
+        let scale = min(1, side / max(img.size.width, img.size.height))
+        let w = max(1, Int((img.size.width * scale).rounded())), h = max(1, Int((img.size.height * scale).rounded()))
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        img.draw(in: NSRect(x: 0, y: 0, width: w, height: h), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
     }
 }

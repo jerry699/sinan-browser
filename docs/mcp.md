@@ -44,17 +44,22 @@ While an agent acts in a page, a dark pill at the bottom of the window it works 
 agent's face and what it does ("Claude Code is clicking “Sign in”"; each new step slides in), with
 **Take Over** (or ⌘.): that agent's session disconnects and its calls stop. MCP stays on, so other
 agents keep working and the stopped one can connect again; only Settings turns it off. The pill
-stays while the agent works and goes a few seconds after its last action; reading, organizing tabs
-and notes never show it.
+stays while the agent works and goes after its last action; reading, organizing tabs and notes
+never show it. While the agent acts in a tab you aren't looking at, the pill is only the agent's
+face, still, where the pill would be: no words and no motion over the page you read. A click on
+the face opens the whole pill, and ⌘. takes over either way. On hover the whole pill shows a ×,
+which puts it away until that agent's session ends without stopping the agent; ⌘. still takes
+over while it acts in the window.
 
-The same face sits at the end of the sidebar row of every tab an agent works in, reading too, and
-goes eight seconds after its last call there. When you are looking at the tab the agent acts in,
+The same face sits at the end of the sidebar row of every tab an agent works in, reading too.
+The pill, the row's face and the cursor stay 10 seconds after the agent's last step, so they don't
+come and go while it thinks; Settings ▸ Advanced ▸ Agents ▸ Keep an agent on screen for picks 5,
+10 or 30 seconds or a minute (`lingerSeconds` in `mcp.json`). When you are looking at the tab the agent acts in,
 the face is its cursor: it glides to what the agent points at, slowly enough to follow, rests on it
 for a moment and squishes when it clicks, so a page never changes without you seeing what was
 clicked. When the agent acts on something out of view, the page scrolls to it smoothly while the
 cursor looks that way, and its wheel scrolls are paced under the cursor, so the page never jumps
-somewhere you didn't see it go. The cursor stays up as long as the tab's face does, so it doesn't
-vanish while the agent thinks. Steps a few milliseconds apart change the pill's words at most once
+somewhere you didn't see it go. Steps a few milliseconds apart change the pill's words at most once
 every 0.7 s, the latest winning. On a tab you aren't looking at there is no cursor and the agent
 works at full speed.
 
@@ -65,17 +70,24 @@ or minimised windows and with Cra in the background:
 
 - `tab_open` opens a tab like a ⌘-clicked link: in the today list of the current space (or the
   space named by `space`), loading, unread and not selected. Cra doesn't come forward.
-  `select=true` also shows it in its window; `activate=true` brings Cra to the front.
+  `select=true` also shows it in its window; `activate=true` brings Cra to the front. Pass
+  `splitWith` a tab ID from `tabs_list` to open the new page beside that tab, creating or extending
+  its split. The new pane inherits the target's space; the response includes `splitId` and
+  `paneTabIds`. For a target currently visible in a window, pass `select=true` or the request is
+  refused. `select=true` focuses the new pane. Use the pane `tabId` with page tools.
 - The first time a client works in a page, Cra turns on DevTools focus emulation for it, so the
   page runs as a focused, visible page: input lands, animations run, and screenshots work.
   When the last client disconnects (or MCP is turned off) those pages go back to normal.
 - A sleeping tab wakes in the background when a tool needs it, and a tab an agent works in
   counts as used, so tab sleeping and freezing wait as they would after you looked at it.
 - `tabs_list` lists your tabs in sidebar order with their space, section (favorites, pinned,
-  today) and folder. `active` marks the tab on screen in the window you used last;
-  `selected` marks each window's shown tab.
-- `tab_close` closes today tabs, as ⌘W does (Reopen Closed Tab brings one back). Pinned tabs,
-  favorites and tabs in a split stay.
+  today), folder, and split membership (`splitId`, `splitPaneIndex`, `splitPaneCount`). `active`
+  marks the tab on screen in the window you used last; `selected` marks each window's shown tab.
+- `tab_close` closes today tabs, as ⌘W does, and split panes this connection opened. Pinned tabs,
+  favorites and split panes this connection did not open stay.
+- `tabs_search` finds open tabs when every query word appears in the title or URL. Optional `space`,
+  `folder`, and `section` filters match exactly, ignoring case. Results keep sidebar order, return
+  up to 50 by default (200 maximum), and report the match count and whether results were truncated.
 - `tab_move`, `tab_update` and `folder_create` organize the sidebar as a drag or a menu does:
   move a tab to another space, to its favorites, pinned or today section, into a folder or after
   another tab; rename, mute, put to sleep or wake it; make a folder in a space's pinned section.
@@ -90,9 +102,10 @@ extension's frame inside a page (a password manager's menu) are refused too.
 | Tool | What it does |
 | --- | --- |
 | `tabs_list` | Your tabs in sidebar order, plus this connection's windowless pages |
-| `tab_open` | Open an HTTP(S) page in the background (`space`, `select`, `activate`, `windowless`) |
+| `tabs_search` | Search open tabs by title and URL; optionally filter by space, folder and section |
+| `tab_open` | Open an HTTP(S) page in the background, optionally beside a tab in Split View (`space`, `splitWith`, `select`, `activate`, `windowless`) |
 | `tab_show` | Select a tab in its window; `activate=true` also brings Cra forward |
-| `tab_close` | Close a today tab |
+| `tab_close` | Close a today tab or this connection's own split pane |
 | `page_read` | Visible text in pages of up to 20,000 UTF-16 units, and up to 50 links |
 | `page_snapshot` | Accessibility tree with stable refs, including same-site iframes and open shadow roots; `interactive` and `query` narrow it |
 | `page_screenshot` | Viewport JPEG (at most 1280 px) of any tab, hidden ones included, with its size for x/y |

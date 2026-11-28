@@ -2,8 +2,9 @@ import Foundation
 
 /// Two Macs' sidebars put together for sync (SettingsSyncService). `base` is the bundle both
 /// were written from, `local` this Mac's sidebar now, `remote` the bundle the other Mac wrote.
-/// What changed on one Mac since `base` is kept. Where both changed one item, the other Mac's
-/// version (the later bundle's) wins, with the children of a folder put together. An item gone
+/// What changed on one Mac since `base` is kept. Where both changed one item, each of its fields
+/// is the other Mac's (the later bundle's) unless only this Mac changed it, with the children of a
+/// folder put together. An item gone
 /// on either Mac stays gone: a tab closed on one Mac came back because the other Mac wrote its
 /// whole sidebar first (reported by a user, 13 Nov 2026).
 public enum SidebarMerge {
@@ -61,6 +62,8 @@ public enum SidebarMerge {
             out[parentID] = parent
             listed[parentID]?.insert(id)
         }
+        // Each Mac closed a different pane of one split: the pane left takes the split's place.
+        ThinSplits.collapse(&out)
         return ids.compactMap { out[$0] }
     }
 
@@ -75,9 +78,51 @@ public enum SidebarMerge {
         case (let b?, let l?, let r?):
             if l == b { return r }
             if r == b { return l }
+            // Changed on both Macs: field by field. The whole item was the other Mac's, parent and all,
+            // so tabs made into a split here while the other Mac only looked at them went back to Today
+            // and left the split with no panes (#921, reported on X).
             var m = r
+            func keepLocal<V: Equatable>(_ key: WritableKeyPath<SidebarItem, V>) {
+                if l[keyPath: key] != b[keyPath: key], r[keyPath: key] == b[keyPath: key] { m[keyPath: key] = l[keyPath: key] }
+            }
+            keepLocal(\.parentID)
+            keepLocal(\.title)
+            keepLocal(\.isUnread)
+            keepLocal(\.folderIcon)
+            keepLocal(\.folderSymbol)
+            keepLocal(\.liveFolder)
+            keepLocal(\.tabGroup)
             m.children = mergeList(base: b.children, local: l.children, remote: r.children)
+            m.data = mergeData(base: b.data, local: l.data, remote: r.data)
             return m
+        }
+    }
+
+    /// A tab's or a split's data changed on both Macs: the other Mac's, unless all it changed is when
+    /// it was looked at (and which pane had focus), as a Mac does with every look; then this Mac's. The
+    /// later look either way, or this Mac's would read as idle to the archive pass.
+    static func mergeData(base: ItemData, local: ItemData, remote: ItemData) -> ItemData {
+        if local == base { return remote }
+        if remote == base { return local }
+        func later(_ a: Date?, _ b: Date?) -> Date? {
+            guard let a else { return b }
+            guard let b else { return a }
+            return max(a, b)
+        }
+        switch (base, local, remote) {
+        case (.tab(let b), .tab(let l), .tab(let r)):
+            func page(_ t: TabData) -> TabData { var t = t; t.timeLastActiveAt = nil; return t }
+            var t = page(r) == page(b) ? l : r
+            t.timeLastActiveAt = later(l.timeLastActiveAt, r.timeLastActiveAt)
+            return .tab(t)
+        case (.split(let b), .split(let l), .split(let r)):
+            func layout(_ s: SplitData) -> SplitData { var s = s; s.timeLastActiveAt = nil; s.focusTabID = nil; return s }
+            var s = layout(r) == layout(b) ? l : r
+            s.focusTabID = l.focusTabID != b.focusTabID && r.focusTabID == b.focusTabID ? l.focusTabID : r.focusTabID
+            s.timeLastActiveAt = later(l.timeLastActiveAt, r.timeLastActiveAt)
+            return .split(s)
+        default:
+            return remote
         }
     }
 
@@ -130,10 +175,18 @@ public struct SyncHistory: Codable, Equatable {
     public struct Entry: Codable, Equatable {
         public var id: UUID
         public var document: SidebarDocument
+        /// The bundle's settings, what SettingsMerge merges against. Nil in a history an older Cra wrote: that bundle's
+        /// settings replace this Mac's whole, as before.
+        public var settings: AppSettings?
+        /// The bundle's easels without their pictures, what Easel.merge merges against. Nil for a bundle without
+        /// easels and in a history an older Cra wrote: then no easel is deleted.
+        public var easels: [Easel]?
 
-        public init(id: UUID, document: SidebarDocument) {
+        public init(id: UUID, document: SidebarDocument, settings: AppSettings? = nil, easels: [Easel]? = nil) {
             self.id = id
             self.document = document
+            self.settings = settings
+            self.easels = easels
         }
     }
 
@@ -143,9 +196,9 @@ public struct SyncHistory: Codable, Equatable {
 
     public init() {}
 
-    public mutating func remember(_ id: UUID, _ document: SidebarDocument) {
+    public mutating func remember(_ id: UUID, _ document: SidebarDocument, settings: AppSettings? = nil, easels: [Easel]? = nil) {
         entries.removeAll { $0.id == id }
-        entries.insert(Entry(id: id, document: document), at: 0)
+        entries.insert(Entry(id: id, document: document, settings: settings, easels: easels), at: 0)
         if entries.count > Self.limit { entries.removeLast(entries.count - Self.limit) }
     }
 
@@ -158,10 +211,29 @@ public struct SyncHistory: Codable, Equatable {
     /// newest first) that this Mac has too. Nil, so the bundle is applied whole, for a bundle from
     /// an older Cra or one written from bundles all gone from here.
     public func base(for manifest: SyncManifest) -> SidebarDocument? {
-        for id in manifest.parentIDs ?? [] { if let doc = document(for: id) { return doc } }
+        baseEntry(for: manifest)?.document
+    }
+
+    /// The settings of the same bundle `base(for:)` picks; nil when it has none (written by an older Cra).
+    public func baseSettings(for manifest: SyncManifest) -> AppSettings? {
+        baseEntry(for: manifest)?.settings
+    }
+
+    /// The easels of the newest of the manifest's `easelParentIDs` remembered with easels; nil when there is none.
+    public func baseEasels(for manifest: SyncManifest) -> [Easel]? {
+        for id in manifest.easelParentIDs ?? [] { if let easels = entries.first(where: { $0.id == id })?.easels { return easels } }
+        return nil
+    }
+
+    private func baseEntry(for manifest: SyncManifest) -> Entry? {
+        for id in manifest.parentIDs ?? [] { if let e = entries.first(where: { $0.id == id }) { return e } }
         return nil
     }
 
     /// The ids a bundle written now names as its parents (`SyncManifest.parentIDs`).
     public var ids: [UUID] { entries.map(\.id) }
+    /// Whether a remembered bundle held the easel, so a Mac may merge against it.
+    public func remembers(easel id: UUID) -> Bool { entries.contains { $0.easels?.contains { $0.id == id } == true } }
+    /// The bundles remembered with their easels, newest first: a manifest's `easelParentIDs`.
+    public var easelIDs: [UUID] { entries.filter { $0.easels != nil }.map(\.id) }
 }

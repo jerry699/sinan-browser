@@ -1,32 +1,38 @@
 import Foundation
 
-/// The iPhone app's icons: the Mac app's four.
+/// The iPhone app's icons: the Mac app's, in its order (Settings ▸ Icon, AppIconManager.presets): Segments, Arc's
+/// own icon set redrawn around Cra's C by Provok (brand/arc-icons), then Cra's earlier alternates.
 public enum MobileAppIcon: String, CaseIterable, Identifiable {
+    // Cra's own four first: the sheet is one row that scrolls sideways, and the icons onboarding offered stay in
+    // reach without scrolling. Arc's set follows in the Mac's order.
     case segments, midnight, mono, violet
+    case original, candy, hologram, neon
+    case flutedGlass = "fluted-glass"
+    case schoolbook, colorful, canary
+    case earlyBirds = "early-birds"
 
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
         case .segments: return "Cra"
-        case .midnight: return "Midnight"
-        case .mono: return "Mono"
-        case .violet: return "Violet"
+        case .flutedGlass: return "Fluted Glass"
+        case .earlyBirds: return "Early Birds"
+        default: return rawValue.prefix(1).uppercased() + rawValue.dropFirst()
         }
     }
 
-    /// The alternate icon's name for iOS; nil is the app's own icon.
+    /// The alternate icon's name for iOS (its set in the asset catalog, `AppIcon-<Label>`); nil is the app's own icon.
     public var alternateName: String? {
-        switch self {
-        case .segments: return nil
-        case .midnight: return "AppIcon-Midnight"
-        case .mono: return "AppIcon-Mono"
-        case .violet: return "AppIcon-Violet"
-        }
+        self == .segments ? nil : "AppIcon-" + label.replacingOccurrences(of: " ", with: "")
     }
 
     /// The picture the picker shows.
     public var previewName: String { (alternateName ?? "AppIcon") + "-Preview" }
+
+    /// Onboarding's icon step keeps Arc Search's two-by-two grid: Cra's own four. Settings ▸ App Icon and the
+    /// App Icon sheet offer every icon.
+    public static let onboardingChoices: [MobileAppIcon] = [.segments, .midnight, .mono, .violet]
 
     public init(alternateName: String?) {
         self = Self.allCases.first { $0.alternateName == alternateName } ?? .segments
@@ -35,6 +41,48 @@ public enum MobileAppIcon: String, CaseIterable, Identifiable {
 
 /// First launch, in Arc Search's order and (where they fit Cra) its words.
 public enum MobileOnboarding {
+    public struct Mock: Equatable {
+        public enum Shape: String { case phone, duoClosed, duoOpen }
+        public let shape: Shape
+        public let size: CGSize
+        public let logicalSize: CGSize
+        public let columnWidth: CGFloat
+        public let keyWidth: CGFloat
+        public let keyHeight: CGFloat
+    }
+
+    /// Phones are longer than 1.6 in either orientation; iPads are shorter but have no side inset.
+    /// The folding screen is both short and one-sided.
+    public static func mock(window: CGSize, safeLeft: CGFloat, safeRight: CGFloat) -> Mock {
+        guard max(window.width, window.height) / min(window.width, window.height) < 1.6,
+              (safeLeft > 0) != (safeRight > 0) else {
+            return Mock(shape: .phone, size: CGSize(width: 330, height: 640),
+                        logicalSize: CGSize(width: 330, height: 640), columnWidth: 330, keyWidth: 26, keyHeight: 30)
+        }
+        let closed = window.height > window.width
+        let size = closed ? CGSize(width: 330, height: 330 * window.height / window.width)
+                          : CGSize(width: 450 * window.width / window.height, height: 450)
+        // The existing mock draws Apple's 393 pt phone at 330 pt.
+        let logicalSize = CGSize(width: window.width * 330 / 393, height: window.height * 330 / 393)
+        let columnWidth = closed ? logicalSize.width : min(logicalSize.width, 540) // SheetHost's wide content cap.
+        // Research's open keyboard: the first row spans 82% of the screen, with nine 4 pt gaps.
+        let keyWidth = closed ? (logicalSize.width - 52) / 10 : (0.82 * logicalSize.width - 36) / 10
+        return Mock(shape: closed ? .duoClosed : .duoOpen, size: size, logicalSize: logicalSize,
+                    columnWidth: columnWidth, keyWidth: keyWidth, keyHeight: closed ? 30 : 36)
+    }
+
+    /// Keeps the exact iPhone layout while its small overflow stays on screen;
+    /// otherwise shrinks only the step's picture to fit the available height.
+    public static func fitScale(available: CGFloat, topInset: CGFloat, bottomInset: CGFloat, heading: CGFloat,
+                                scalable: CGFloat, topPadding: CGFloat = 40, spacing: CGFloat = 24,
+                                bottomReserved: CGFloat = 0) -> CGFloat {
+        let available = available - bottomReserved
+        let fixed = topPadding + heading + spacing
+        let allowance = bottomReserved > 0 ? 0 : min(topPadding + topInset, bottomInset)
+        if fixed + scalable - available <= 2 * allowance { return 1 }
+        return min(1, max(0, (available - fixed) / scalable))
+    }
+
     public enum Step: String, Equatable {
         case welcome, meet, browseForMe, pinch, icon, blocking, defaultBrowser
     }

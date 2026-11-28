@@ -53,6 +53,30 @@ public enum AppLinks {
         }
     }
 
+    /// Whether a request to `url` with no click of its own may still go, once per page load (RedirectGuard):
+    /// another app's address, asked about, and mail, opened. Chrome's flood guard lets either through once
+    /// without a gesture; Cra let only the first through, so a new window a page sent to mailto: opened
+    /// nothing (#684).
+    public static func mayGoWithoutClick(_ url: String) -> Bool {
+        let k = kind(of: url)
+        return k == .asksFirst || k == .opens
+    }
+
+    /// Whether the page that asked for another app's address is a new tab or window that never showed a page
+    /// (window.open(), then sent to mailto:): it closes once the address is handed to macOS, as Chrome closes
+    /// a tab whose first navigation went to an app (external_protocol_handler.cc). It stayed as an empty
+    /// about:blank window (#684).
+    /// A Little Window or tab opened straight on another app's address (a mail link macOS handed to Cra, #821) never
+    /// showed a page either: its address is the app's own, and it closes the same way.
+    public static func closesRequester(currentURL: String, canGoBack: Bool) -> Bool {
+        !canGoBack && (isBlank(currentURL) || kind(of: currentURL) != .page)
+    }
+
+    /// Whether `url` is no page at all: empty, or about:blank with or without a fragment or query.
+    static func isBlank(_ url: String) -> Bool {
+        url.isEmpty || url == "about:blank" || url.hasPrefix("about:blank#") || url.hasPrefix("about:blank?")
+    }
+
     /// What `url` is for a link or window.open that wants a new tab, or a WebKit page's own
     /// navigation to a scheme WebKit doesn't load.
     public static func kind(of url: String) -> Kind {
@@ -85,11 +109,50 @@ extension AppLinks {
         case refuse
     }
 
-    public static func typed(_ url: String, hasApp: Bool) -> Typed {
+    /// `appIsCra`: the app macOS has for it is Cra itself (`handsBackToCra`), which is no app to open it (#821).
+    public static func typed(_ url: String, hasApp: Bool, appIsCra: Bool = false) -> Typed {
         switch kind(of: url) {
         case .page: return .load
         case .refused: return .refuse
-        case .asksFirst, .opens: return hasApp ? .openApp : .search
+        case .asksFirst, .opens: return hasApp && !appIsCra ? .openApp : .search
         }
+    }
+
+    /// Whether the app macOS would open another app's address with is Cra itself: Cra made the Mac's mail app (a
+    /// site's registerProtocolHandler for mailto:, or a choice in Mail's settings). Handing the address over sent it
+    /// straight back as a link from another app, which opened in a Little Window, which handed it over again, without
+    /// end (#821). Chrome doesn't launch a scheme it is the default app for either (external_protocol_handler.cc: it
+    /// "would lead to an infinite loop"). Another copy of Cra counts: macOS gives the link to the one running.
+    public static func handsBackToCra(handlerBundleID: String?, handlerPath: String?, ownBundleID: String?, ownPath: String) -> Bool {
+        if let handlerBundleID, let ownBundleID, handlerBundleID.caseInsensitiveCompare(ownBundleID) == .orderedSame { return true }
+        guard let handlerPath else { return false }
+        func plain(_ path: String) -> String { path.hasSuffix("/") ? String(path.dropLast()) : path }
+        return plain(handlerPath) == plain(ownPath)
+    }
+
+    /// "Open <app>?" as Chrome's ExternalProtocolDialog asks it (GitHub #785). The question names the origin that
+    /// started the navigation (an extension's chrome.tabs.update is the extension's own origin, tabs_api.cc), else the
+    /// page's host. `rememberable`: Chrome may keep an "always allow" for that origin
+    /// (ExternalProtocolHandler::MayRememberAllowDecisionsForThisOrigin: a potentially trustworthy origin, https or an
+    /// extension's); then the question offers "Always allow <origin> to open links of this type in the associated app",
+    /// and once ticked that origin opens the app without asking, as in Chrome and Arc.
+    public struct Ask: Equatable, Sendable {
+        public let title: String
+        public let message: String
+        /// The checkbox's words, nil when the question has none.
+        public let alwaysAllow: String?
+    }
+
+    public static func ask(app: String, initiator: String?, rememberable: Bool, pageHost: String?) -> Ask {
+        let who = initiator.map(displayOrigin) ?? pageHost ?? "This site"
+        let always = initiator.flatMap { rememberable ? "Always allow \(displayOrigin($0)) to open links of this type in the associated app" : nil }
+        return Ask(title: "Open \(app)?", message: "\(who) wants to open this application.", alwaysAllow: always)
+    }
+
+    /// An origin ("https://example.com", "chrome-extension://<id>") as Chrome shows it in that dialog
+    /// (url_formatter::FormatOriginForSecurityDisplay, OMIT_CRYPTOGRAPHIC): https without its scheme, others with it.
+    public static func displayOrigin(_ origin: String) -> String {
+        for scheme in ["https://", "wss://"] where origin.lowercased().hasPrefix(scheme) { return String(origin.dropFirst(scheme.count)) }
+        return origin
     }
 }

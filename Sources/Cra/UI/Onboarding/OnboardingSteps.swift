@@ -74,11 +74,15 @@ struct PrivacyStep: View {
             TwoLineHeader(title: L10n.tr("Privacy in Cra,\nyou're in control"),
                           subtitle: L10n.tr("Cra works fully signed out. Your spaces, tabs and archive are plain files on your Mac."), c: c)
             VStack(alignment: .leading, spacing: 8) {
-                SelectableRow(c: c, checked: model.blockAdsAndTrackers, toggle: { model.blockAdsAndTrackers.toggle() }) {
+                SelectableRow(c: c, checked: model.adAwayEnabled, toggle: { model.adAwayEnabled.toggle() }) {
                     RowSymbol(name: "hand.raised.fill", c: c)
-                    RowTitle(title: L10n.tr("Block third-party ads and trackers"),
-                             caption: L10n.tr("You won't see them. And they won't see you."), c: c)
+                    RowTitle(title: L10n.tr("Enable AdAway"),
+                             caption: L10n.tr("Block third-party ad and tracker domains with this offline list."), c: c)
                 }
+                SelectableRow(c: c, checked: model.anudeepEnabled, toggle: { model.anudeepEnabled.toggle() }) {
+                    RowSymbol(name: "hand.raised.fill", c: c)
+                    RowTitle(title: L10n.tr("Enable Anudeep’s Blacklist"),
+                             caption: L10n.tr("Block additional advertising and tracking servers."), c: c)                }
                 SelectableRow(c: c, checked: model.sharesToImproveCra, toggle: { model.sharesToImproveCra.toggle() }) {
                     RowSymbol(name: "chart.bar.fill", c: c)
                     RowTitle(title: L10n.tr("Help improve Cra by sharing usage stats"),

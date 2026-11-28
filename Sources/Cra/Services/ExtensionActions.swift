@@ -55,6 +55,11 @@ final class ExtensionActions {
             // profile's prefs ~10 s later, and triggerAction on it crashes Chromium (#41).
             if inDefaultProfile, await isTurnedOff(extensionID) { throw Failure.turnedOff }
             let tab = try await tabTarget(for: browser)
+            // Chrome runs the action on its window's active tab, whichever tab the target names (ExtensionActionViewModel::
+            // ExecuteUserAction): the page becomes that tab first. Cra makes a page the active tab as it takes the focus,
+            // a moment after the click, so the popup and its activeTab went to the page focused before: a Little Window's,
+            // or the blank page that keeps the profile's Chrome window open, which extensions can't see ("not a website", #731).
+            browser.setFocused(true)
             let before = WindowSnapshot()
             placingOwnPopup = true
             triggered = true
@@ -212,13 +217,31 @@ final class ExtensionActions {
 
     /// Popup targets already seen (each is placed once).
     private var seenPopupTargets: Set<String> = []
+    /// The windows on screen when a blank target appeared, by target: a popup's page target is created blank and
+    /// reports its address later, by which time Chrome may already show the popup's window. Taken at the address,
+    /// the snapshot counted that window as there before, the popup was never found, and it stayed hidden
+    /// (chrome.action.openPopup() about every other time, extension-open-popup).
+    private var snapshotsAtCreation: [String: WindowSnapshot] = [:]
 
     /// A target for an extension's popup URL that Cra's own `run` is not waiting for. Chrome
     /// creates it blank ("other", no URL) and reports the URL in a later targetInfoChanged.
     private func popupPageCreated(_ params: String) {
         guard let p = try? JSONSerialization.jsonObject(with: Data(params.utf8)) as? [String: Any],
-              let info = p["targetInfo"] as? [String: Any], let target = info["targetId"] as? String,
-              let url = (info["url"] as? String).flatMap(URL.init(string:)), url.scheme == "chrome-extension",
+              let info = p["targetInfo"] as? [String: Any], let target = info["targetId"] as? String else { return }
+        let address = info["url"] as? String ?? ""
+        if !address.hasPrefix("chrome-extension:") {
+            if address.isEmpty || address == "about:blank" {
+                if snapshotsAtCreation[target] == nil {
+                    if snapshotsAtCreation.count > 64 { snapshotsAtCreation.removeAll() }
+                    snapshotsAtCreation[target] = WindowSnapshot()
+                }
+            } else {
+                snapshotsAtCreation.removeValue(forKey: target)
+            }
+            return
+        }
+        let before = snapshotsAtCreation.removeValue(forKey: target) ?? WindowSnapshot()
+        guard let url = URL(string: address), url.scheme == "chrome-extension",
               let id = url.host, url.fragment == nil, info["type"] as? String != "service_worker" else { return }
         guard let entry = ExtensionStore.shared.entries.first(where: { $0.extensionID == id }) else {
             // For scenarios: a page of an extension Cra hasn't listed yet can't be told to be its popup.
@@ -231,7 +254,7 @@ final class ExtensionActions {
             CraLog.note("extension popup \(id): no place to show it from")
             return
         }
-        placePopup(appearingAfter: WindowSnapshot(), anchor: anchor)
+        placePopup(appearingAfter: before, anchor: anchor)
     }
 
     // MARK: Live actions (GitHub #106)

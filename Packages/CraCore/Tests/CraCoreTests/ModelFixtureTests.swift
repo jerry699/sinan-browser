@@ -179,6 +179,22 @@ struct ModelFixtureTests {
         #expect(try Self.roundTrips(shown))
     }
 
+    /// The profile picked for each site in a Little Window outlives a relaunch, as Arc's
+    /// domainToProfilePreferences does. Files from before it pick none, and an unreadable entry costs
+    /// only the picks, not the windows.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/768")) func littleWindowSiteProfilesLoadAsRecorded() throws {
+        let (loaded, recorded) = try Self.load("windows.json", as: WindowPrefs.self)
+        let work = UUID(uuidString: "C0000000-0000-0000-0000-000000000001")!
+        #expect(loaded.siteProfiles.profile(for: "https://www.youtube.com/watch") == RememberedProfile(id: work))
+        #expect(loaded.siteProfiles.profile(for: "https://gitlab.example.com/a") == RememberedProfile(id: nil))
+        #expect(recorded.siteProfiles == loaded.siteProfiles)
+        #expect(try Self.load("windows-legacy.json", as: WindowPrefs.self).loaded.siteProfiles == SiteProfiles())
+
+        let broken = Data(#"{"siteProfiles": ["youtube.com"], "littleWindowSize": "{480, 640}"}"#.utf8)
+        let prefs = try Self.decoder.decode(WindowPrefs.self, from: broken)
+        #expect(prefs.siteProfiles == SiteProfiles() && prefs.littleWindowSize == "{480, 640}")
+    }
+
     /// sync-history.json (#474): the last bundles sync wrote or applied, each a whole sidebar, so a
     /// bundle the other Mac wrote from one of them is merged rather than applied whole.
     @Test func syncHistoryLoadsAsRecorded() throws {
@@ -188,6 +204,19 @@ struct ModelFixtureTests {
         #expect(try Self.roundTrips(loaded))
         let saved = try #require(JSONSerialization.jsonObject(with: Self.encoder.encode(loaded)) as? [String: Any])
         let file = try #require(JSONSerialization.jsonObject(with: Self.data("recorded", "sync-history.json")) as? [String: Any])
+        #expect(NSDictionary(dictionary: saved).isEqual(to: file))
+    }
+
+    /// Since easels sync, each bundle in sync-history.json keeps its easels (without pictures), what
+    /// Easel.merge merges against. An entry, or a whole history, from an older Cra has none.
+    @Test func syncHistoryWithEaselsLoadsAsRecorded() throws {
+        let (loaded, recorded) = try Self.load("sync-history-easels.json", as: SyncHistory.self)
+        #expect(loaded == recorded)
+        #expect(loaded.entries.map { $0.easels?.map(\.title) } == [["Board", "Plan"], nil])
+        #expect(try Self.load("sync-history.json", as: SyncHistory.self).loaded.entries.allSatisfy { $0.easels == nil })
+        #expect(try Self.roundTrips(loaded))
+        let saved = try #require(JSONSerialization.jsonObject(with: Self.encoder.encode(loaded)) as? [String: Any])
+        let file = try #require(JSONSerialization.jsonObject(with: Self.data("recorded", "sync-history-easels.json")) as? [String: Any])
         #expect(NSDictionary(dictionary: saved).isEqual(to: file))
     }
 
@@ -274,6 +303,46 @@ struct ModelFixtureTests {
         #expect(try Self.roundTrips(loaded))
         #expect(loaded.isRefused(folder: "aeblfdkhhhdcdjpifhhbdiojplfjncoa", inProfile: "Default"))
         #expect(!loaded.isRefused(folder: "aeblfdkhhhdcdjpifhhbdiojplfjncoa", inProfile: "Profile 9"))
+    }
+
+    /// shared-extensions.json (discussion #595): the shared extensions, the profiles each was taken out of, and the
+    /// uninstalls a profile still owes.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/595"))
+    func sharedExtensionsLoadAsRecorded() throws {
+        let (loaded, recorded) = try Self.load("shared-extensions.json", as: SharedExtensions.self)
+        #expect(loaded == recorded)
+        #expect(try Self.roundTrips(loaded))
+        let all = ["Default", "Profile B0000000-0000-0000-0000-000000000001", "Profile B0000000-0000-0000-0000-000000000002"]
+        #expect(loaded.profiles(of: "cjpalhdlnbpafiamejdnhcphjbkeiagm", allProfiles: all) == Array(all.prefix(2)))
+        #expect(loaded.profiles(of: "nngceckbapebfimnlniiiahkandclblb", allProfiles: all) == all)
+        #expect(loaded.plan(profile: all[2], installed: ["cjpalhdlnbpafiamejdnhcphjbkeiagm", "nngceckbapebfimnlniiiahkandclblb"])
+                == .init(uninstall: ["cjpalhdlnbpafiamejdnhcphjbkeiagm"]))
+    }
+
+    /// shared-extensions.json after discussion #595's follow-up: an opt-in share (its profiles, the profile whose data
+    /// it uses, switched off) beside a share from before (every profile but the excluded), which keeps its shape.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/595"))
+    func optInSharedExtensionsLoadAsRecorded() throws {
+        let (loaded, recorded) = try Self.load("shared-extensions-opt-in.json", as: SharedExtensions.self)
+        #expect(loaded == recorded)
+        #expect(try Self.roundTrips(loaded))
+        let all = ["Default", "Profile B0000000-0000-0000-0000-000000000001", "Profile B0000000-0000-0000-0000-000000000002"]
+        #expect(loaded.profiles(of: "bpoadfkcbjbfhfodiogcnhhhpibjhbnh", allProfiles: all) == Array(all.prefix(2)))
+        #expect(loaded.home(of: "bpoadfkcbjbfhfodiogcnhhhpibjhbnh") == all[1])
+        #expect(!loaded.isOn("bpoadfkcbjbfhfodiogcnhhhpibjhbnh"))
+        #expect(loaded.profiles(of: "cjpalhdlnbpafiamejdnhcphjbkeiagm", allProfiles: all) == Array(all.prefix(2)))
+        #expect(loaded.home(of: "cjpalhdlnbpafiamejdnhcphjbkeiagm") == nil)
+    }
+
+    /// imported-browsers.json (#757): the browsers imported from, whose own folders Cra may read
+    /// at launch; a browser listed twice loads once, and it saves as a plain array.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/757"))
+    func importedBrowsersLoadAsRecorded() throws {
+        let (loaded, recorded) = try Self.load("imported-browsers.json", as: ImportedBrowsers.self)
+        #expect(loaded == recorded)
+        #expect(try Self.roundTrips(loaded))
+        #expect(try Self.encoder.encode(loaded) == Self.data("recorded", "imported-browsers.json").dropLast())
+        #expect(loaded.contains("chrome") && !loaded.contains("brave"))
     }
 
     // MARK: What the old shapes turn into

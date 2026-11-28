@@ -98,6 +98,8 @@ private struct SpaceChoice: View {
 struct ChangeProfileDialog: View {
     let space: Space
     let profiles: [BrowserProfile]
+    /// The Default profile's name (#666).
+    var defaultName = ProfileNames.defaultName
     let others: [Space]
     let onChange: (UUID?) -> Void
     let onCreate: (String, Set<UUID>) -> Void
@@ -106,10 +108,11 @@ struct ChangeProfileDialog: View {
     @State private var creating = false
     @State private var pill = CGRect.zero
 
-    init(space: Space, profiles: [BrowserProfile], spaces: [Space], onChange: @escaping (UUID?) -> Void,
+    init(space: Space, profiles: [BrowserProfile], defaultName: String = ProfileNames.defaultName, spaces: [Space], onChange: @escaping (UUID?) -> Void,
          onCreate: @escaping (String, Set<UUID>) -> Void, onCancel: @escaping () -> Void) {
         self.space = space
         self.profiles = profiles
+        self.defaultName = defaultName
         self.others = spaces
         self.onChange = onChange
         self.onCreate = onCreate
@@ -127,9 +130,8 @@ struct ChangeProfileDialog: View {
 
     private var choiceName: String {
         switch choice {
-        case .new: return L10n.tr("New Profile")
-        case .existing(let id): return profiles.first { $0.id == id }?.name ?? L10n.tr("Default")
-        }
+        case .new: return "New Profile"
+        case .existing(let id): return id == nil ? defaultName : profiles.first { $0.id == id }?.name ?? defaultName        }
     }
 
     private func showMenu() {
@@ -137,7 +139,7 @@ struct ChangeProfileDialog: View {
         guard let content = NSApp.windows.last(where: { $0 is DialogPanel && $0.isVisible })?.contentView else { return }
         let m = NSMenu()
         m.autoenablesItems = false
-        MenuItems.add(m, L10n.tr("Default")) { choice = .existing(nil) }
+        MenuItems.add(m, defaultName) { choice = .existing(nil) }
         for p in profiles { MenuItems.add(m, p.name) { choice = .existing(p.id) } }
         m.addItem(.separator())
         MenuItems.add(m, L10n.tr("New Profile")) { choice = .new }

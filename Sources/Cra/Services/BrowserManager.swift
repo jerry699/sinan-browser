@@ -7,6 +7,13 @@ import CraCEF
 final class TabRuntime {
     let tabID: UUID
     let browser: CraBrowser
+    var hasElementHidingStyle = false
+    var recoveryOptions = 0
+    /// The site (host) the committed page was styled for (list filters, boost), nil until it commits.
+    /// Chromium reports a link's or redirect's page committing before its address (#869).
+    var styledSite: String?
+    /// The page's document runs the filter lists' procedural hiding (#845).
+    var hasProceduralHiding = false
     var progress: Double = 0
     /// The toolbar's colour as read off the page (ToolbarSampler), "" until read.
     var themeColor: String = ""
@@ -17,6 +24,14 @@ final class TabRuntime {
     var infoBars: [PageInfoBar] = []
     /// What the page paints behind its content ("#RRGGBB", "" until reported).
     var backgroundColor: String = ""
+    /// Whether this document needs Cra's fallback Canvas background, nil until probed (#846).
+    var boostCanvasNeedsFallback: Bool?
+    /// Whether the fallback stylesheet is currently on this page.
+    var boostCanvasFallbackOn = false
+    /// Counts this tab's documents, so a probe answered after the next page committed is dropped.
+    var boostCanvasDocument = 0
+    /// The stylesheet last adopted for this page's Boost, so live edits with unchanged CSS don't repaint.
+    var boostCSS = ""
     /// Cra popped this tab's video out because the user left the tab (Arc's
     /// auto Picture in Picture); coming back brings the video home.
     var autoPictureInPicture = false
@@ -24,6 +39,11 @@ final class TabRuntime {
     /// When Cra last ran the page's own `enterpictureinpicture` handler on leaving the tab (a
     /// Google Meet call opens its Document Picture in Picture window); coming back closes it.
     var sessionPictureInPictureAt: Date?
+    /// The space this tab was last shown in, so Picture in Picture started after leaving it
+    /// still remembers where to return (#843).
+    var lastShownSpaceID: UUID?
+    /// The space that held this tab when Picture in Picture started (#843).
+    var pictureInPictureSpaceID: UUID?
     /// The tab switcher's thumbnail, taken while the page was last on screen.
     var snapshot: NSImage?
     var snapshotWork: DispatchWorkItem?
@@ -59,11 +79,15 @@ final class TabRuntime {
     var sleepHold: TabSleepPolicy.Hold?
     /// Whether this page's DevTools are open, closing or asked for (DevToolsToggle).
     var devTools = DevToolsToggle()
+    /// What its DevTools frontend is asked once it is up, and when it takes the keys (CraCore DevToolsFrontendCalls).
+    var devToolsCalls = DevToolsFrontendCalls()
     /// Loads of an extension's page Chromium blocked because the extension wasn't up yet
     /// (ExtensionPageRetry); back to 0 once a page loads.
     var extensionPageRetries = 0
     /// Which ask of the page for its next Widevine request is the live one (BrowserManager.watchProtectedVideo).
     var protectedVideoWatch: UInt = 0
+    /// Which ask of the page for its next Widevine failure is the live one (BrowserManager.watchWidevineFailure).
+    var widevineFailureWatch: UInt = 0
     /// The page is on its way to WebKit for a protected video (its sign-in is being copied).
     var movingToWebKit = false
     /// The next of those loads (LiveScheduler runs work only while its handle is kept).
@@ -110,6 +134,8 @@ protocol BrowserManagerDelegate: AnyObject {
     func browserManagerDevToolsHost(for tabID: UUID) -> NSView?
     /// A DevTools pane appeared or closed; the shell decides whether to show the dock.
     func browserManagerDevToolsChanged()
+    /// The tab's DevTools take the keys: they opened, or a command keeps them shown (DevToolsFrontendCalls).
+    func browserManagerDevToolsTakeKeys(_ tabID: UUID)
     /// A call's tab sharing changed on one of the pages (CraBrowser.isBeingShared, canShareInstead).
     func browserManagerTabSharingChanged()
     /// Chrome's docked frontend moved its page placeholder (streamed while its splitter is dragged).
@@ -197,6 +223,8 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     var pageAdopted: ((UUID, UUID) -> Void)?
     /// The window's sidebar player (Arc's "now playing"), fed with this manager's pages.
     var nowPlaying: NowPlaying?
+    /// The island player's next read of what its cards play (scheduleMediaPoll).
+    private var mediaPoll: ScheduledWork?
     /// A tab's page closed (the tab closed or went to sleep), with what Chromium kept for it.
     var pageClosed: (UUID) -> Void = { _ in }
     private var byBrowser: [ObjectIdentifier: UUID] = [:]
@@ -207,6 +235,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     private var permissionSheet: (request: PermissionRequest, dialog: PermissionPopover)?
     /// CEF's client holds its owner weakly; keep retired browsers alive until teardown finishes.
     private var closingBrowsers: [ObjectIdentifier: CraBrowser] = [:]
+    /// New tabs (a page's link, ⌘T, another app's link) that Air Traffic Control may still move while they
+    /// redirect on their way to their first page (#868). A tab leaves once it moves or settles.
+    private var redirectStates: [UUID: LinkRedirectState] = [:]
 
     /// Tab sleeping's clock: a test advances it instead of waiting out the idle threshold.
     let clock: Scheduler
@@ -388,7 +419,14 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             host.parent?.removeChildWindow(host)
             host.orderOut(nil)
         }
-        rt.browser.containerView.removeFromSuperview()
+        // A WebKit page in (or on its way into) its own full screen keeps its view where it is: taken out of the
+        // window then, WebKit's full-screen controller went with an entry pending and WebKit trapped. Closing,
+        // WebKitBrowser takes it down once WebKit is out; moving, the new window's add() takes it.
+        if PageEngines.isInOwnFullscreen(rt.browser) {
+            rt.browser.containerView.isHidden = true
+        } else {
+            rt.browser.containerView.removeFromSuperview()
+        }
         delegate?.browserManagerDevToolsChanged()
         return rt
     }
@@ -397,10 +435,19 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         show(tabID.map { [$0] } ?? [], focused: tabID, focus: focus)
     }
 
+    /// The window moved to another space while keeping the same visible tab(s) on screen (e.g. a
+    /// shared favorite selected in both spaces): update their remembered space (#843).
+    func spaceChanged(to spaceID: UUID) {
+        for id in visibleTabIDs { runtimes[id]?.lastShownSpaceID = spaceID }
+    }
+
     /// Show several tabs at once (split view); `focused` gets keyboard focus.
-    func show(_ tabIDs: [UUID], focused: UUID?, focus: Bool) {
+    /// `autoPictureInPicture` false: the pages going out of sight don't open their automatic Picture in Picture
+    /// (another space came on screen, #703).
+    func show(_ tabIDs: [UUID], focused: UUID?, focus: Bool, autoPictureInPicture: Bool = true) {
         let started = Perf.now()
         let previousFocus = visibleTabID
+        let currentSpace = store.focusedSpaceID(window: windowID)
         let newSet = Set(tabIDs)
         for previous in visibleTabIDs where !newSet.contains(previous) {
             runtimes[previous]?.hiddenAt = clock.now
@@ -408,7 +455,8 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             saveHistory(previous)
             if tabIDs.contains(where: { !visibleTabIDs.contains($0) && isSplitCopy($0, of: previous) }) {
                 hibernate(previous)
-            } else {
+            } else if autoPictureInPicture {
+                runtimes[previous]?.lastShownSpaceID = currentSpace
                 leaveTab(previous)
             }
         }
@@ -420,6 +468,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             let made = runtimes[id] == nil ? Perf.now() : nil
             guard let rt = ensureRuntime(for: id) else { shown.append(id); continue }
             if let made { creating += Perf.ms(since: made) }
+            rt.lastShownSpaceID = currentSpace
             if !wasVisible.contains(id) {
                 wake(id, rt)
                 returnToTab(rt)
@@ -658,6 +707,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         // CEF closes asynchronously. Retire ownership first so reopening the tab
         // creates a new browser, and late callbacks cannot mutate its replacement.
         guard let rt = release(tabID) else { return }
+        redirectStates[tabID] = nil
         log(tabID, "closes its page")
         Perf.cancel(.pageLoad, tabID.uuidString)
         Perf.cancel(.tabWake, tabID.uuidString)
@@ -1011,6 +1061,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             PageEngines.videoPages.forget(tab: id)
         }
         sleptTabs = sleptTabs.filter { store.item($0)?.isTab == true }
+        for id in Array(redirectStates.keys) where store.item(id)?.isTab != true {
+            redirectStates[id] = nil
+        }
         for (id, rt) in runtimes where store.item(id)?.isTab == true && !inRightProfile(rt) {
             release(id)?.browser.close()
         }
@@ -1020,7 +1073,10 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         rt.browser.isIncognito || rt.browser.profilePath == store.profilePath(item: rt.tabID)
     }
 
-    func closeAll() { for id in Array(runtimes.keys) { unload(id) } }
+    func closeAll() {
+        for id in Array(runtimes.keys) { unload(id) }
+        redirectStates.removeAll()
+    }
 
     func layoutVisible() {
         for id in visibleTabIDs {
@@ -1181,10 +1237,10 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         PictureInPictureChrome.shared.time = (position, duration)
     }
 
-    /// Picture in Picture's "back to tab": select the tab, bring its window up
-    /// and put the video back in the page (also when the tab was already selected).
+    /// Picture in Picture's "back to tab": select the tab in the space the video came from,
+    /// bring its window up and put the video back in the page (also when the tab was already selected).
     private func bringToFront(_ tabID: UUID) {
-        store.selectTab(tabID, window: windowID)
+        store.selectTab(tabID, in: runtimes[tabID]?.pictureInPictureSpaceID, window: windowID)
         container.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         runtimes[tabID]?.browser.exitPictureInPicture()
@@ -1199,7 +1255,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         guard let id = tabID(of: browser) else { return }
         log(id, "Picture in Picture: back to tab")
         runtimes[id]?.pendingAutoPictureInPicture = false
-        store.selectTab(id, window: windowID)
+        store.selectTab(id, in: runtimes[id]?.pictureInPictureSpaceID, window: windowID)
         container.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -1273,12 +1329,15 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             PictureInPictureChrome.shared.videoLeft()
         }
         if active {
+            let focused = store.focusedSpaceID(window: windowID)
+            rt.pictureInPictureSpaceID = visibleTabIDs.contains(id) ? focused : (rt.lastShownSpaceID ?? focused)
             rt.autoPictureInPicture = rt.pendingAutoPictureInPicture
             rt.pendingAutoPictureInPicture = false
             // The request from leaving the tab landed after the user came back.
             if rt.autoPictureInPicture, id == visibleTabID, !windowCovered { browser.exitPictureInPicture() }
         } else {
             rt.autoPictureInPicture = false
+            rt.pictureInPictureSpaceID = nil
         }
         delegate?.browserManagerDidUpdate(id)
     }
@@ -1407,6 +1466,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             let js = "(v => { if (window.__cra) window.__cra.volume = v; document.querySelectorAll('video,audio').forEach(m => m.volume = v); })(\(max(0, min(1, v))))"
             runtimes[id]?.browser.evaluate(inIsolatedWorld: PageScript.world, params: Self.evaluateParams(js, userGesture: false)) { _, _ in }
             return
+        case .skip(let seconds): return seekMedia(id, by: seconds, to: nil)
+        case .seek(let seconds): return seekMedia(id, by: 0, to: seconds)
+        case .refreshMedia: return refreshMediaInfo(id)
         case .toggleMute, .show: return
         }
         guard let rt = runtimes[id] else { nowPlaying?.remove(id); return }
@@ -1534,6 +1596,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     /// Which track buttons the page answers (media session handlers), and whether it has a video.
     private func refreshMediaControls(_ id: UUID) {
         guard let browser = runtimes[id]?.browser else { return }
+        refreshMediaInfo(id)
         let webKit = browser is WebKitBrowser
         let js = """
         (() => { const has = \(webKit ? "window.__cra?.query() ?? []" : "[]");
@@ -1553,6 +1616,71 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             DispatchQueue.main.async {
                 guard let actions = Self.jsonObject(result)?["actions"] as? [String] else { return }
                 self?.nowPlaying?.update(id) { $0.hasPrevious = actions.contains("previoustrack"); $0.hasNext = actions.contains("nexttrack") }
+            }
+        }
+    }
+
+    // MARK: Island player (Discussion #761)
+
+    /// Only the island player shows what plays (title, artist, artwork, time): Arc's cards read nothing more.
+    private var readsMedia: Bool { store.settings.nowPlayingStyle == .island }
+
+    /// Reads the page's media session and playing media element in PageScript's isolated world (every engine),
+    /// and starts loading the artwork the island shows through the page's own network (NowPlayingArtwork).
+    func refreshMediaInfo(_ id: UUID) {
+        guard readsMedia, let browser = runtimes[id]?.browser else { return }
+        browser.evaluate(inIsolatedWorld: PageScript.world, params: Self.evaluateParams(NowPlayingMedia.script, userGesture: false)) { [weak self] result, _ in
+            DispatchQueue.main.async {
+                guard let self, let np = self.nowPlaying, np.entries.contains(where: { $0.id == id }) else { return }
+                let media = Self.stringResult(result).flatMap(NowPlayingMedia.parse)
+                let now = self.clock.now.timeIntervalSinceReferenceDate
+                np.update(id) { $0.media = media; $0.mediaReadAt = now }
+                if let url = media?.artworkURL(forPixels: NowPlayingArtwork.pixels), let browser = self.runtimes[id]?.browser {
+                    NowPlayingArtwork.shared.load(url, through: browser)
+                }
+            }
+        }
+        scheduleMediaPoll()
+    }
+
+    /// While the island shows cards, what they play is read again every 2 s: a playlist moves on, a page seeks,
+    /// the rate changes. In between the island moves the time on itself (NowPlayingClock). Nothing is read while
+    /// Arc's cards are chosen or no card shows.
+    private func scheduleMediaPoll() {
+        guard mediaPoll == nil, readsMedia, nowPlaying?.shown.isEmpty == false else { return }
+        mediaPoll = clock.after(2) { [weak self] in
+            guard let self else { return }
+            self.mediaPoll = nil
+            guard self.readsMedia, let np = self.nowPlaying else { return }
+            for e in np.shown { self.refreshMediaInfo(e.id) }
+        }
+    }
+
+    /// The island's skips and progress bar: the playing media element's time (no user gesture), else, on
+    /// Chromium, the page's own seek handlers (a page playing audio it never added to the document).
+    private func seekMedia(_ id: UUID, by delta: Double, to target: Double?) {
+        guard let rt = runtimes[id], delta.isFinite, target?.isFinite ?? true else { return }
+        let js = """
+        ((by, to) => {
+          const media = [...document.querySelectorAll('video,audio')];
+          const m = media.find(x => !x.paused && !x.ended) ?? media.find(x => x.currentTime > 0) ?? media[0];
+          if (!m) return 'none';
+          const end = isFinite(m.duration) ? m.duration : Infinity;
+          m.currentTime = Math.max(0, Math.min(end, to ?? m.currentTime + by));
+          return 'seeked';
+        })(\(delta), \(target.map { "\($0)" } ?? "null"))
+        """
+        rt.browser.evaluate(inIsolatedWorld: PageScript.world, params: Self.evaluateParams(js, userGesture: false)) { [weak self, weak rt] result, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if Self.stringResult(result) == "none", delta != 0, let rt, !(rt.browser is WebKitBrowser) {
+                    let action = delta < 0 ? "seekbackward" : "seekforward"
+                    rt.browser.sendDevToolsMethod("Cra.mediaSession", params: Self.jsonObjectString(["action": action])) { [weak self] _, _ in
+                        DispatchQueue.main.async { self?.refreshMediaInfo(id) }
+                    }
+                    return
+                }
+                self.refreshMediaInfo(id)
             }
         }
     }
@@ -1585,6 +1713,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         if !browser.isAudible { nowPlaying?.remove(id) }
         // Our own error page is a data: URL; keep the real address in the model.
         if url.hasPrefix("data:text/html;base64,") { return }
+        if let runtime = runtimes[id] { restyleCommittedPage(runtime, url: url) }
         // A restored page has no address yet when it is shown.
         if id == visibleTabID { Perf.visibleSite(browser.isIncognito ? nil : SiteNames.siteHost(of: url)) }
         store.updateTab(id, url: url)
@@ -1592,6 +1721,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         scheduleHistorySave(id)
         if !browser.isIncognito { LiveFolderManager.shared.pageChanged(tab: id, to: url) }
         protectedVideoPageChanged(id, browser, url: url)
+        routeNewTab(id, browser: browser, url: url)
         delegate?.browserManagerDidUpdate(id)
     }
 
@@ -1607,7 +1737,11 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             Perf.end(.pageLoad, id.uuidString)
             Perf.end(.tabWake, id.uuidString)
         }
-        if !loading { runtimes[id]?.progress = 0 }
+        if !loading {
+            runtimes[id]?.progress = 0
+            // A new tab's grace for client-side redirects starts when its first web page has loaded.
+            if browser.currentURL.hasPrefix("http") { redirectStates[id]?.noteLoadFinished(at: clock.now) }
+        }
         if !loading { scheduleHistorySave(id) }
         // Two seconds on, the page (a video player especially) has settled before it is captured.
         if !loading { scheduleSnapshot(id, after: 2) }
@@ -1625,11 +1759,77 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         // Start-up phases: firstPageShown, then the page's navigation committed, then loaded.
         if committed, id == visibleTabID { Perf.phase("firstPageCommitted") }
         if committed {
+            if let runtime = runtimes[id] {
+                runtime.hasElementHidingStyle = false
+                runtime.recoveryOptions = 0
+                runtime.styledSite = Self.styledSite(of: browser.currentURL)
+                runtime.boostCanvasNeedsFallback = nil
+                runtime.boostCanvasDocument += 1
+                runtime.boostCanvasFallbackOn = false
+                runtime.boostCSS = ""
+                runtime.hasProceduralHiding = false
+                applyElementHiding(to: runtime)
+            }
             shareTheme(id, with: browser)
             applyBoost(to: browser, clearing: false)
-            if let css = store.cookieBannerCSS(item: id) { adopt(css, as: "__craCookieBanners", in: browser) }
+            if !BlockLists.shared.isPaused(url: browser.currentURL), let css = store.cookieBannerCSS(item: id) { adopt(css, as: "__craCookieBanners", in: browser) }
+        } else {
+            runtimes[id]?.styledSite = nil
         }
         delegate?.browserManagerDidUpdate(id)
+    }
+
+    private static func styledSite(of url: String) -> String { URL(string: url)?.host?.lowercased() ?? "" }
+
+    /// A committed page whose address names another site than the one it was styled for: a link's popup (no
+    /// address yet) or a page reached through a redirect (google.com/url?q=…), whose address Chromium reports
+    /// just after the commit. It gets that site's list filters and boost, replacing what the first guess put on
+    /// it (#869). A page's own address change (pushState) stays on its site and styles nothing again.
+    private func restyleCommittedPage(_ runtime: TabRuntime, url: String) {
+        guard let styled = runtime.styledSite else { return }
+        let site = Self.styledSite(of: url)
+        guard site != styled, !site.isEmpty else { return }
+        runtime.styledSite = site
+        applyElementHiding(to: runtime)
+        applyBoost(to: runtime.browser)
+    }
+
+    func refreshElementHiding() {
+        for runtime in runtimes.values { applyElementHiding(to: runtime) }
+    }
+
+    private func applyElementHiding(to runtime: TabRuntime) {
+        let browser = runtime.browser
+        guard let url = URL(string: browser.currentURL), let scheme = url.scheme,
+              ["http", "https"].contains(scheme.lowercased()), let host = url.host else { return }
+        let active = !BlockLists.shared.isPaused(url: browser.currentURL)
+        let cookies = active && store.settings.blockCookieBanners
+        let warnings = active && store.settings.removesAdblockWarnings
+        let options = (cookies ? 1 : 0) + (warnings ? 2 : 0)
+        if options != runtime.recoveryOptions, let recovery = Self.pageRecovery {
+            runtime.recoveryOptions = options
+            let selectors = CookieBanners.selectors.joined(separator: ",")
+            runPageScript("(\(recovery))(\(cookies),\(warnings),\(Self.jsonString(selectors)))", in: browser)
+        }
+        applyProceduralHiding(to: runtime, host: host)
+        let css = BlockLists.shared.style(for: host)
+        guard runtime.hasElementHidingStyle || !css.isEmpty else { return }
+        // Important declarations in a layer outrank unlayered site author styles.
+        let layered = css.isEmpty ? "" : "@layer cra-list-filters {\n" + css + "\n}"
+        adopt(layered, as: "__craListFilters", in: browser)
+        runtime.hasElementHidingStyle = !css.isEmpty
+    }
+
+    /// The lists' procedural hiding for the page's site, in Cra's world (FilterPageScripts, #845): a promoted post
+    /// found by the text in it, again as the page adds posts. An empty list takes back what an earlier one hid.
+    private func applyProceduralHiding(to runtime: TabRuntime, host: String) {
+        let selectors = BlockLists.shared.procedural(for: host)
+        guard runtime.hasProceduralHiding || !selectors.isEmpty,
+              let expression = FilterPageScripts.proceduralExpression(selectors),
+              let params = try? JSONSerialization.data(withJSONObject: ["expression": expression]),
+              let json = String(data: params, encoding: .utf8) else { return }
+        runtime.browser.evaluate(inIsolatedWorld: PageScript.world, params: json) { _, _ in }
+        runtime.hasProceduralHiding = !selectors.isEmpty
     }
 
     /// Arc's "Allow websites to get your theme data": the space's palette as `--arc-palette-*` and
@@ -1654,9 +1854,68 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         let boost = Self.boostFor?(browser.currentURL, engineTints)
         // A new document has nothing adopted: no call unless there is a boost to put on it.
         guard boost != nil || clearing else { return }
-        adopt(boost?.css ?? "", as: "__craBoost", in: browser)
+        let css = boost?.css ?? ""
+        let rt = tabID(of: browser).flatMap { runtimes[$0] }
+        // A colour drag with the engine drawing the tint leaves this CSS unchanged; replacing an
+        // identical sheet would invalidate paint and flash the page's dark background (#846).
+        let reused = clearing && rt?.boostCSS == css
+        if !reused {
+            adopt(css, as: "__craBoost", in: browser)
+            rt?.boostCSS = css
+        }
+        applyBoostCanvasFallback(css.contains("filter:") == true, in: browser)
         if engineTints { browser.setBoostTint(boost?.tint) }
         if let js = boost?.js, !js.isEmpty { browser.executeJavaScript(js) }
+    }
+
+    /// A CSS filter on `html` also needs the page's background inside the filtered subtree, but only
+    /// when the page has no background of its own: a fallback would otherwise replace a site's
+    /// colours. Both `html` and `body` must compute transparent; a tint-only boost has no CSS filter
+    /// and is left alone (#846).
+    private func applyBoostCanvasFallback(_ needed: Bool, in browser: CraBrowser) {
+        guard let id = tabID(of: browser), let rt = runtimes[id],
+              !(browser is NativePage), PageEngines.engine(of: browser) == .chromium else { return }
+        guard needed else {
+            if rt.boostCanvasFallbackOn {
+                adopt("", as: "__craBoostCanvas", in: browser)
+                rt.boostCanvasFallbackOn = false
+            }
+            return
+        }
+        // The probe must run once per document: once Cra's Canvas background is adopted, reading it
+        // back would see it as the page's own background and toggle the fallback off on every edit.
+        if let needs = rt.boostCanvasNeedsFallback {
+            if needs != rt.boostCanvasFallbackOn {
+                adopt(needs ? "html { background-color: Canvas !important; }" : "",
+                      as: "__craBoostCanvas", in: browser)
+                rt.boostCanvasFallbackOn = needs
+            }
+            return
+        }
+        // Read once the page has loaded: at commit a site's stylesheet (one its script adds, or a slow
+        // file) isn't applied yet, and its dark background would read as none (#846). A page that never
+        // finishes loading is read after five seconds.
+        let js = "/*__craBoostCanvas*/new Promise(done=>{const read=()=>{"
+            + "const h=getComputedStyle(document.documentElement).backgroundColor;"
+            + "const b=getComputedStyle(document.body||document.documentElement).backgroundColor;"
+            + "const clear=s=>!s||s==='transparent'||s==='rgba(0, 0, 0, 0)';"
+            + "done(clear(h)&&clear(b)?'yes':'no');};"
+            + "if(document.readyState==='complete')return read();"
+            + "const t=setTimeout(read,5000);addEventListener('load',()=>{clearTimeout(t);read();},{once:true});})"
+        let params = Self.jsonObjectString(["expression": js, "returnByValue": true, "awaitPromise": true])
+        let document = rt.boostCanvasDocument
+        browser.evaluate(inIsolatedWorld: PageScript.world, params: params) { [weak self, weak rt] result, _ in
+            DispatchQueue.main.async {
+                guard let self, let rt, self.runtimes[id] === rt, rt.boostCanvasDocument == document,
+                      let answer = Self.stringResult(result) else { return }
+                let needs = answer == "yes"
+                rt.boostCanvasNeedsFallback = needs
+                if needs {
+                    self.adopt("html { background-color: Canvas !important; }", as: "__craBoostCanvas", in: browser)
+                    rt.boostCanvasFallbackOn = true
+                }
+            }
+        }
     }
 
     /// Every page on `host` gets its boost again (the editor's changes, live).
@@ -1666,12 +1925,19 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         }
     }
 
+    private static let pageRecovery = Bundle.main.url(forResource: "page-recovery", withExtension: "js", subdirectory: "blocklist")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+
     /// A stylesheet adopted by the page's document from Cra's world, kept under `name` there so a
     /// later commit of the same document replaces it.
     private func adopt(_ css: String, as name: String, in browser: CraBrowser) {
         guard let literal = String(data: (try? JSONSerialization.data(withJSONObject: [css], options: [])) ?? Data(), encoding: .utf8) else { return }
         let script = "(()=>{let s=window.\(name);if(!s){s=window.\(name)=new CSSStyleSheet();"
             + "document.adoptedStyleSheets=[...document.adoptedStyleSheets,s];}s.replaceSync(\(literal)[0]);})()"
+        runPageScript(script, in: browser)
+    }
+
+    private func runPageScript(_ script: String, in browser: CraBrowser) {
         guard let params = try? JSONSerialization.data(withJSONObject: ["expression": script]),
               let json = String(data: params, encoding: .utf8) else { return }
         browser.evaluate(inIsolatedWorld: PageScript.world, params: json) { _, _ in }
@@ -1692,9 +1958,12 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         PaymentRecovery.offerRepairIfTradeFailure(url: url, browser: browser)
         if statusCode != 0 { runtimes[id]?.extensionPageRetries = 0 }
         watchProtectedVideo(id, browser)
+        watchWidevineFailure(id, browser)
         guard !browser.isIncognito else { return }
         // The profile's extensions are up: imported Web Store copies become store installs (#203).
         ExtensionStore.shared.installFromWebStore(using: browser, profile: store.profileDirectoryName(item: id))
+        // …and it gets the shared extensions it lacks, or loses one taken out of it (discussion #595).
+        ExtensionStore.shared.reconcileShared(profile: store.profileDirectoryName(item: id), using: browser)
         if url.hasPrefix("chrome://settings") { watchClearBrowsingData(browser) }
         store.recordVisit(url: url, title: title.isEmpty ? (store.item(id)?.tab?.savedTitle ?? "") : title, profile: store.profileID(item: id))
     }
@@ -1722,11 +1991,12 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
 
     func browser(_ browser: CraBrowser, didLoadFavicon image: NSImage, forURL iconURL: String) {
         guard let id = tabID(of: browser), let tab = store.item(id)?.tab else { return }
-        guard let site = FaviconKey.key(for: tab.url) ?? tab.faviconKey.map(FaviconKey.siteKey(of:)) else { return }
+        guard let site = FaviconKey.sectionKey(for: tab.url) ?? tab.faviconKey.map(FaviconKey.siteKey(of:)) else { return }
         let key = FaviconKey.key(site: site, tabID: id)
         let persist = !browser.isIncognito
-        favicons.store(image, forKey: site, persist: persist)
-        favicons.store(image, forKey: key, persist: persist)
+        // The tab's own, its section's and its host's: a row elsewhere in the section borrows the
+        // section's, and only a section never seen falls back to the host's (#909).
+        for k in FaviconKey.chain(of: key).reversed() { favicons.store(image, forKey: k, persist: persist) }
         store.setFaviconKey(id, key)
     }
 
@@ -1736,7 +2006,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         guard let rt = runtimes[id], rt.toolbarSamplePending, !rt.discarded, visibleTabIDs.contains(id) else { return }
         rt.toolbarSamplePending = false
         let revision = rt.navigationRevision
-        ToolbarSampler.sample(rt.browser) { [weak self, weak rt] hex in
+        ToolbarSampler.sample(rt.browser, background: { [weak rt] in rt?.backgroundColor }) { [weak self, weak rt] hex in
             // A reading that lands after the page moved on isn't the new page's colour.
             guard let self, let rt, self.runtimes[id] === rt, rt.navigationRevision == revision, !rt.browser.isLoading else { return }
             self.browser(rt.browser, didReportThemeColor: hex)
@@ -1893,12 +2163,85 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         return true
     }
 
+    /// A new tab that Air Traffic Control may still move while it redirects to its first page (#868): a
+    /// page's link, a ⌘T address or another app's link that opened where no route sent it.
+    func beginRedirectRouting(for tabID: UUID, space: UUID?) {
+        guard let space, !store.isStandalone(window: windowID), !store.isStandalone(space: space),
+              !store.isPinned(tabID) else { return }
+        redirectStates[tabID] = LinkRedirectState()
+    }
+
+    /// An address the user typed for the tab (⌘L): it stays in the tab and its space (#868).
+    func noteExplicitNavigation(_ tabID: UUID) {
+        redirectStates[tabID] = nil
+    }
+
+    private func isRouteSpaceAvailable(_ sid: UUID) -> Bool {
+        store.space(sid) != nil && !store.isStandalone(space: sid)
+    }
+
+    /// Air Traffic Control for a new tab whose address changed (#868): a redirect to a routed address moves
+    /// it to the route's space. The window goes along only when the tab is still the one it shows; one the
+    /// user has left (or opened behind) moves on its own and is marked unread, as a link opened behind is.
+    private func routeNewTab(_ id: UUID, browser: CraBrowser, url: String) {
+        guard var state = redirectStates[id] else { return }
+        let currentSpace = store.spaceID(ofItem: id) ?? store.focusedSpaceID(window: windowID)
+        let decision = LinkRedirectRouting.decision(
+            for: url,
+            currentSpaceID: currentSpace,
+            isStandalone: browser.isIncognito || store.isStandalone(window: windowID) || store.isStandalone(space: currentSpace),
+            isPinnedOrFavorite: store.isPinned(id) || store.isFavorite(id),
+            inSplit: store.splitContaining(id) != nil,
+            isInFront: store.selectedTabID(window: windowID) == id,
+            state: &state,
+            routes: store.settings.linkRoutes,
+            spaceAvailable: { self.isRouteSpaceAvailable($0) },
+            now: clock.now
+        )
+        redirectStates[id] = state.isTransient ? state : nil
+        guard case .moveTab(let targetSpace, let follow) = decision else { return }
+        let oldProfile = browser.profilePath
+        if follow {
+            store.rerouteTab(id, toSpace: targetSpace, window: windowID)
+        } else {
+            store.moveTab(id, toSpace: targetSpace)
+            store.markUnread(id, true)
+        }
+        let profileChanged = store.profilePath(item: id) != oldProfile
+        guard profileChanged || follow else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.store.item(id)?.isTab == true else { return }
+            // A route to a space on another profile reopens the page there.
+            self.pruneMissingTabs()
+            if follow {
+                self.show(id, focus: true)
+            } else if profileChanged {
+                self.loadBehind(id)
+            }
+        }
+    }
+
     /// A link that asks for a new tab, from `source`'s page or from a Peek over it (#202): a
-    /// Today tab in `source`'s space, else the window's.
+    /// Today tab in `source`'s space, else the window's (or an ATC space route, #868).
     func openLinkTab(_ url: String, from source: UUID?, inBackground background: Bool) {
         // cra:// is Cra's scripting scheme (DevTools Protocol, key presses); a page must not drive it.
         if url.lowercased().hasPrefix("cra:") { return }
         let sourceSpace = source.flatMap { store.spaceID(ofItem: $0) }
+        let effectiveSourceSpace = sourceSpace ?? store.focusedSpaceID(window: windowID)
+        let sourceIncognito = source.flatMap { runtimes[$0]?.browser.isIncognito ?? store.isIncognito(item: $0) } ?? false
+        let standalone = sourceIncognito || store.isStandalone(window: windowID) || store.isStandalone(space: effectiveSourceSpace)
+        let targetSpace = store.settings.space(forLinkURL: url, currentSpaceID: effectiveSourceSpace,
+                                               isStandalone: standalone, spaceAvailable: { self.isRouteSpaceAvailable($0) })
+        if let targetSpace {
+            let tab = store.createTab(url: url, in: targetSpace, select: !background,
+                                      parent: nil, index: nil, window: windowID, referrer: source)
+            if background {
+                store.markUnread(tab.id, true)
+                loadBehind(tab.id)  // load it so the title and favicon fill in
+                delegate?.browserManagerOpenedInBackground(tab.id)
+            }
+            return
+        }
         // Links from a today tab open right below it (Arc), a split's below the split; otherwise at
         // the top. With "Open background tabs below the current tab" on, one behind the page goes
         // after the tabs `source` opened before (#532). Back on the new tab, with no page behind,
@@ -1908,6 +2251,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         }
         let tab = store.createTab(url: url, in: sourceSpace, select: !background,
                                   parent: slot?.parent, index: slot?.index, window: windowID, referrer: source)
+        if !standalone {
+            beginRedirectRouting(for: tab.id, space: effectiveSourceSpace)
+        }
         if background {
             store.markUnread(tab.id, true)
             loadBehind(tab.id)  // load it so the title and favicon fill in
@@ -1930,12 +2276,38 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
             return host
         }
         let sourceSpace = source.flatMap { store.spaceID(ofItem: $0) }
+        let effectiveSourceSpace = sourceSpace ?? store.focusedSpaceID(window: windowID)
+        let standalone = browser.isIncognito || store.isStandalone(window: windowID) || store.isStandalone(space: effectiveSourceSpace)
+        if let targetSpace = store.settings.space(forLinkURL: url, currentSpaceID: effectiveSourceSpace,
+                                                  isStandalone: standalone, spaceAvailable: { self.isRouteSpaceAvailable($0) }) {
+            let tab = store.createTab(url: url, in: targetSpace, select: !background, parent: nil, index: nil,
+                                      window: windowID, referrer: source)
+            if store.profilePath(space: targetSpace) != browser.profilePath {
+                // Returning nil lets PageHost::Adopt close the source-profile WebContents cleanly so
+                // mismatched profiles are never paired (#868).
+                if background {
+                    store.markUnread(tab.id, true)
+                    loadBehind(tab.id)
+                    delegate?.browserManagerOpenedInBackground(tab.id)
+                } else {
+                    show(tab.id, focus: true)
+                }
+                return nil
+            }
+            if background { store.markUnread(tab.id, true) }
+            let host = makePopupHost(for: tab.id, opener: browser)
+            if background { delegate?.browserManagerOpenedInBackground(tab.id) } else { show(tab.id, focus: true) }
+            return host
+        }
         // A ⌘-click or middle click goes where new tabs go, or with "Open background tabs below the
         // current tab" on right below `source`, after the tabs it opened before (#532).
         let slot = background && store.settings.backgroundTabsBelowCurrent
             ? source.flatMap { store.linkTabSlot(below: $0, afterEarlierLinks: true) } : nil
         let tab = store.createTab(url: url, in: sourceSpace, select: !background, parent: slot?.parent, index: slot?.index,
                                   window: windowID, referrer: source)
+        if !standalone {
+            beginRedirectRouting(for: tab.id, space: effectiveSourceSpace)
+        }
         if background { store.markUnread(tab.id, true) }
         let host = makePopupHost(for: tab.id, opener: browser)
         if background { delegate?.browserManagerOpenedInBackground(tab.id) } else { show(tab.id, focus: true) }
@@ -1985,6 +2357,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
         PageEngines.videoPages.navigated(tab: id, to: url, sites: PageEngines.sites)
         delegate?.browserManagerProtectedVideoPromptChanged(id)
         watchProtectedVideo(id, browser)
+        watchWidevineFailure(id, browser)
     }
 
     /// Asks a mixed site's Chromium page to answer when it next asks for Widevine
@@ -2093,15 +2466,80 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     /// An incognito page's go to the incognito session's throwaway store and nowhere else. Which
     /// cookies: ProtectedVideoHandoff.cookies. A copy that fails moves the page all the same.
     private func copySignIn(of mixed: MixedMediaSite, from browser: CraBrowser, tab id: UUID, then: @escaping () -> Void) {
+        copyCookies(named: mixed.host, from: browser, tab: id, then: then) { ProtectedVideoHandoff.cookies(fromProtocolAnswer: $0, for: mixed) }
+    }
+
+    /// The cookies `select` takes from the page's Chromium profile go to the same profile's WebKit
+    /// store (an incognito page's to the incognito session's throwaway store), then `then`.
+    private func copyCookies(named name: String, from browser: CraBrowser, tab id: UUID, then: @escaping () -> Void,
+                             select: @escaping (String) -> [HTTPCookie]) {
         let incognito = browser.isIncognito
         let profilePath = incognito ? nil : store.profilePath(item: id)
         browser.sendDevToolsMethod("Network.getAllCookies", params: "{}") { [weak self] result, error in
             DispatchQueue.main.async {
-                let cookies = ProtectedVideoHandoff.cookies(fromProtocolAnswer: result ?? "", for: mixed)
-                self?.log(id, "copies \(cookies.count) cookies of \(incognito ? "(incognito)" : mixed.host) to WebKit\(error.map { " (\($0))" } ?? "")")
+                let cookies = select(result ?? "")
+                self?.log(id, "copies \(cookies.count) cookies of \(incognito ? "(incognito)" : name) to WebKit\(error.map { " (\($0))" } ?? "")")
                 WebKitStores.add(cookies, profilePath: profilePath, incognito: incognito, done: then)
             }
         }
+    }
+
+    // MARK: Widevine that fails (docs/protected-media.md)
+
+    /// Asks a Chromium page whose site may move (ProtectedMediaSites.movesWhenWidevineFails) to
+    /// answer when Widevine fails there (PageScript.widevineFailure): an answer left waiting in the
+    /// page, so nothing polls. Asked again whenever the page's address changes or it finishes
+    /// loading; a newer ask takes an older one's place, and a page that navigates away ends its own.
+    private func watchWidevineFailure(_ id: UUID, _ browser: CraBrowser) {
+        guard let rt = runtimes[id], rt.browser === browser, !(browser is NativePage), PageEngines.engine(of: browser) == .chromium,
+              PageEngines.sites.movesWhenWidevineFails(at: browser.currentURL, choices: PageEngines.choices, incognito: browser.isIncognito)
+        else { return }
+        rt.widevineFailureWatch &+= 1
+        let watch = rt.widevineFailureWatch
+        let params = Self.jsonObjectString(["expression": PageScript.widevineFailure, "returnByValue": true, "awaitPromise": true])
+        browser.evaluate(inIsolatedWorld: PageScript.world, params: params) { [weak self, weak browser] result, _ in
+            let failedAt = Self.stringResult(result) ?? ""
+            DispatchQueue.main.async {
+                guard let self, let browser, let rt = self.runtimes[id], rt.browser === browser, rt.widevineFailureWatch == watch,
+                      !failedAt.isEmpty else { return }
+                self.widevineFailed(id, browser, at: failedAt)
+            }
+        }
+    }
+
+    /// Widevine failed on the page while it was at `failedAt`: the site plays in Safari's engine
+    /// from now on, and the page moves there. The "plays with Safari's engine" toast tells the
+    /// user when it shows; the Site Control Center's switch takes the site back for good.
+    private func widevineFailed(_ id: UUID, _ browser: CraBrowser, at failedAt: String) {
+        let url = browser.currentURL
+        // It went to another site since, or the site was chosen meanwhile.
+        guard URL(string: failedAt)?.host?.lowercased() == URL(string: url)?.host?.lowercased(),
+              PageEngines.sites.movesWhenWidevineFails(at: url, choices: PageEngines.choices, incognito: browser.isIncognito) else { return }
+        log(id, "Widevine failed on \(site(url, id, browser)): moves the site to Safari's engine")
+        moveSiteToSafariEngine(id, url: url)
+    }
+
+    /// The Site Control Center's switch turned on, or Widevine that failed: `url`'s site plays in
+    /// WebKit from now on (PageEngines.choose), and the tab's page opens there at its address,
+    /// signed in. The cookies the page sends go to the profile's WebKit store first
+    /// (ProtectedVideoHandoff.cookies(forPageAt:)); a copy that fails or takes over 2 seconds
+    /// moves the page all the same.
+    func moveSiteToSafariEngine(_ id: UUID, url: String) {
+        PageEngines.choose(.webKit, for: url)
+        guard let rt = runtimes[id], !rt.movingToWebKit, PageEngines.engine(of: rt.browser) == .chromium,
+              PageEngines.engine(for: rt.browser.currentURL, tab: id) == .webKit else { return reopenInItsEngine(id) }
+        let browser = rt.browser
+        rt.movingToWebKit = true
+        var moved = false
+        let move = { [weak self, weak rt] in
+            guard !moved else { return }
+            moved = true
+            rt?.movingToWebKit = false
+            guard let self, self.runtimes[id]?.browser === browser else { return }
+            self.reopenInItsEngine(id)
+        }
+        copyCookies(named: site(url, id, browser), from: browser, tab: id, then: move) { ProtectedVideoHandoff.cookies(fromProtocolAnswer: $0, forPageAt: url) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: move)
     }
 
     /// The tab's page closes and opens again at `url`, in the engine the address gets, on screen
@@ -2161,11 +2599,20 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     /// (DevToolsToggle.Command).
     func runDevTools(_ command: DevToolsToggle.Command) {
         guard let rt = visibleRuntime else { return }
+        let open = rt.devTools.state == .open
         let (effect, frontend) = rt.devTools.run(command)
         // A press made while DevTools close is done when they reopen (DevToolsToggle.didClose),
         // one made while they open once the frontend is up.
-        rt.browser.devToolsAction = frontend
+        let (engineAction, now) = rt.devToolsCalls.command(frontend, shows: effect == .show || effect == .frontend, frontendUp: open)
+        rt.browser.devToolsAction = engineAction
         perform(effect, on: rt)
+        take(now, on: rt)
+    }
+
+    /// Runs a DevToolsFrontendCalls step in the page's frontend.
+    private func take(_ step: DevToolsFrontendCalls.Step, on rt: TabRuntime) {
+        if let script = step.script { rt.browser.executeJavaScript(script, inDevTools: true) }
+        if step.takesKeys, let id = tabID(of: rt.browser) { delegate?.browserManagerDevToolsTakeKeys(id) }
     }
 
     private func perform(_ effect: DevToolsToggle.Effect, on rt: TabRuntime) {
@@ -2204,8 +2651,16 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate, WebKit
     }
 
     func browser(_ browser: CraBrowser, devToolsShowsPanel panel: String) {
-        guard let id = tabID(of: browser) else { return }
-        runtimes[id]?.devTools.didShowPanel(panel)
+        guard let id = tabID(of: browser), let rt = runtimes[id] else { return }
+        let first = rt.devTools.panel == nil
+        rt.devTools.didShowPanel(panel)
+        // A closing frontend's report is dropped (DevToolsToggle.didShowPanel).
+        guard rt.devTools.state == .open || rt.devTools.state == .opening else { return }
+        take(rt.devToolsCalls.frontendShowsPanel(first: first), on: rt)
+    }
+
+    func browserDevToolsWantsKeys(_ browser: CraBrowser) {
+        if let id = tabID(of: browser) { delegate?.browserManagerDevToolsTakeKeys(id) }
     }
 
     /// CEF's window for the visible tab's DevTools, if any.

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -14,6 +15,7 @@
 class ChromeBrowserMainExtraParts;
 
 namespace content {
+class BrowserContext;
 class WebContents;
 struct ContextMenuParams;
 struct GlobalRenderFrameHostId;
@@ -160,8 +162,12 @@ inline LinkOpenHook g_link_open = nullptr;
 
 // An address no page loads (another app's, Cra's cra-boost:) from a page of Cra's: Cra asks about it over the
 // page instead of Chrome's external protocol dialog, which would hang off Chrome's never-shown window (true:
-// handled).
-using ExternalProtocolHook = bool (*)(content::WebContents* contents, const GURL& url, bool user_gesture);
+// handled). `initiating_origin`: the origin that started the navigation, which Chrome's dialog names and remembers
+// "Always allow" for (an extension's chrome.tabs.update is the extension's own, GitHub #785).
+using ExternalProtocolHook = bool (*)(content::WebContents* contents,
+                                      const GURL& url,
+                                      bool user_gesture,
+                                      const std::optional<url::Origin>& initiating_origin);
 inline ExternalProtocolHook g_external_protocol = nullptr;
 
 // Cra's navigation throttles, for its pages' own navigations: a link that opens in a Peek, a page Cra shows in
@@ -173,6 +179,29 @@ inline NavigationThrottlesHook g_navigation_throttles = nullptr;
 // Arc, GitHub #298; the CEF bridge's CanDownload). True: no download.
 using DownloadInterceptHook = bool (*)(content::WebContents* contents, const GURL& url);
 inline DownloadInterceptHook g_download_intercept = nullptr;
+
+// Whether Cra is closing this page of its own. Its beforeunload runs, as in Chrome, but it never asks "Leave site?":
+// a tab closed in Cra goes, as in Arc (patches/cra-close-without-asking.patch, GitHub #705).
+using ClosingWithoutAskingHook = bool (*)(content::WebContents* contents);
+inline ClosingWithoutAskingHook g_closing_without_asking = nullptr;
+
+// Whether Cra manages an installed extension in this profile: a shared extension, which Cra's Settings keep in
+// every profile the person picked (GitHub discussion #595). chrome://extensions says "Managed by Cra" for it instead of
+// nothing; Cra's ManagementPolicy provider keeps it installed (patches/extension-managed-by-cra.patch).
+using ExtensionManagedHook = bool (*)(content::BrowserContext* context, const std::string& extension_id);
+inline ExtensionManagedHook g_extension_managed = nullptr;
+
+// A shared extension whose data comes from the profile it was set up in (discussion #595's follow-up): the context
+// whose chrome.storage.local and .sync it reads and writes from `context`, `context` itself when it isn't one or that
+// profile hasn't loaded (patches/extension-shared-storage.patch).
+using ExtensionStorageContextHook = content::BrowserContext* (*)(content::BrowserContext* context,
+                                                                 const std::string& extension_id);
+inline ExtensionStorageContextHook g_extension_storage_context = nullptr;
+
+// The loaded contexts that use `context`'s data for `extension_id`, which storage.onChanged reaches too.
+using ExtensionStoragePeersHook = std::vector<content::BrowserContext*> (*)(content::BrowserContext* context,
+                                                                           const std::string& extension_id);
+inline ExtensionStoragePeersHook g_extension_storage_peers = nullptr;
 
 }  // namespace cra
 

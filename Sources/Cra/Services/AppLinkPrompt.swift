@@ -8,6 +8,36 @@ import CraCEF
 /// dialog (CraCEF's OnProtocolExecution).
 @MainActor
 enum AppLinkPrompt {
+    /// The app macOS opens `target` with. Scenarios make Cra that app for a scheme (`debugSchemesOwnedByCra`).
+    private static func application(toOpen target: URL) -> URL? {
+        if let scheme = target.scheme?.lowercased(), debugSchemesOwnedByCra.contains(scheme) { return Bundle.main.bundleURL }
+        return NSWorkspace.shared.urlForApplication(toOpen: target)
+    }
+
+    /// Whether `app` is Cra (this copy, or another one macOS would hand the link to): AppLinks.handsBackToCra.
+    private static func isCra(_ app: URL) -> Bool {
+        AppLinks.handsBackToCra(handlerBundleID: Bundle(url: app)?.bundleIdentifier, handlerPath: app.standardizedFileURL.path,
+                                ownBundleID: Bundle.main.bundleIdentifier, ownPath: Bundle.main.bundleURL.standardizedFileURL.path)
+    }
+
+    /// `cra://debug?appLinkOwnedByCra=<scheme>` (#821): Cra stands as the Mac's app for the scheme, as when it was made
+    /// the mail app, without touching the Mac's real choice. Handing such an address to macOS comes back as a link from
+    /// another app, as macOS sends it, at most five times so a copy without the fix can't freeze for good.
+    static var debugSchemesOwnedByCra: Set<String> = []
+    private static var debugHandedBack = 0
+
+    /// Gives `target` to the app macOS has for it.
+    private static func handOver(_ target: URL) {
+        if let scheme = target.scheme?.lowercased(), debugSchemesOwnedByCra.contains(scheme) {
+            debugHandedBack += 1
+            CraLog.note("macOS hands \(scheme): back to Cra (\(debugHandedBack))")
+            guard debugHandedBack <= 5 else { return }
+            DispatchQueue.main.async { (NSApp.delegate as? AppDelegate)?.openExternalURL(target.absoluteString) }
+            return
+        }
+        NSWorkspace.shared.open(target)
+    }
+
     /// Chromium's new tabs and windows (CraCEF's OnBeforePopup) and a page's own navigation to
     /// another app (the engine's HandleExternalProtocol) come here first. The page's own redirect
     /// gets Chrome's flood guard, as WebKit pages do: asked once per page load. Slack's
@@ -24,16 +54,16 @@ enum AppLinkPrompt {
     /// needs no tab; the caller loads a page, searches an address no app opens, and drops a refused one.
     static func openTyped(_ url: String) -> AppLinks.Typed {
         let target = URL(string: url)
-        let app = target.flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
-        let typed = AppLinks.typed(url, hasApp: app != nil)
+        let app = target.flatMap { application(toOpen: $0) }
+        let typed = AppLinks.typed(url, hasApp: app != nil, appIsCra: app.map(isCra) ?? false)
         let scheme = url.prefix { $0 != ":" }.lowercased() + ":"
         switch typed {
         case .load: break
         case .openApp:
             let name = app.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? "?"
             CraLog.note("command bar opens \(name) for \(scheme)")
-            if let target { NSWorkspace.shared.open(target) }
-        case .search: CraLog.note("command bar: no app opens \(scheme), searched")
+            if let target { handOver(target) }
+        case .search: CraLog.note("command bar: no app opens \(scheme)\(app.map(isCra) == true ? " but Cra" : ""), searched")
         case .refuse: CraLog.note("command bar can't open \(scheme) (refused)")
         }
         return typed
@@ -45,10 +75,10 @@ enum AppLinkPrompt {
         redirectGuards.object(forKey: browser)?.value.pageLoaded()
     }
 
-    /// Only another app's address spends the page's one question; a refused scheme doesn't, and a
+    /// Only another app's address or mail spends the page's one go (#684); a refused scheme doesn't, and a
     /// boost still needs a click.
     private static func mayAskWithoutClick(_ url: String, from browser: CraBrowser) -> Bool {
-        guard AppLinks.kind(of: url) == .asksFirst, !BoostInstall.isBoostLink(url) else { return false }
+        guard AppLinks.mayGoWithoutClick(url), !BoostInstall.isBoostLink(url), !EaselShare.isEaselLink(url) else { return false }
         return redirectGuard(for: browser).value.mayAsk(userGesture: false)
     }
 
@@ -74,6 +104,13 @@ enum AppLinkPrompt {
             else { CraLog.note("page \(page) can't offer a boost (no click)") }
             return true
         }
+        // An easel's Open in Cra, the same way: only on a click, asked about first.
+        if EaselShare.isEaselLink(url) {
+            let page = browser.isIncognito ? "(incognito)" : CraLog.host(browser.currentURL)
+            if userGesture { EaselShare.offer(url, over: browser.containerView.window, from: page) }
+            else { CraLog.note("page \(page) can't offer an easel (no click)") }
+            return true
+        }
         let kind = AppLinks.kind(of: url)
         if kind == .page { return false }
         let page = browser.isIncognito ? "(incognito)" : CraLog.host(browser.currentURL)
@@ -83,14 +120,34 @@ enum AppLinkPrompt {
             return true
         }
         // No app for it: nothing happens, as in Chrome.
-        guard let app = NSWorkspace.shared.urlForApplication(toOpen: target) else {
+        guard let app = application(toOpen: target) else {
             CraLog.note("page \(page) wants \(scheme), no app opens it")
+            closeIfBlank(browser, scheme: scheme)
+            return true
+        }
+        // Cra is the Mac's app for it (made the mail app): macOS would hand it straight back, to a Little Window
+        // that hands it over again, without end (#821). Nothing opens, as in Chrome.
+        if isCra(app) {
+            CraLog.note("page \(page) wants \(scheme), Cra is the app for it: not handed back to itself")
+            closeIfBlank(browser, scheme: scheme)
             return true
         }
         let name = FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
+        // What the engine knows about the origin that started it, while it asks (#785): Chrome's dialog names that
+        // origin, and an origin the user always allowed opens the app without asking. An older engine says nothing.
+        let context = (CraCEFRuntime.self as AnyObject).responds(to: NSSelectorFromString("appLinkInitiatingOrigin"))
+        let origin = context ? CraCEFRuntime.appLinkInitiatingOrigin() : nil
+        let rememberable = context && CraCEFRuntime.appLinkOriginIsRememberable()
+        if kind == .asksFirst, context, CraCEFRuntime.appLinkAllowedWithoutAsking() {
+            CraLog.note("page \(page) opens \(name) for \(scheme): always allowed")
+            handOver(target)
+            closeIfBlank(browser, scheme: scheme)
+            return true
+        }
         if kind == .opens {
             CraLog.note("page \(page) opens \(name) for \(scheme)")
-            NSWorkspace.shared.open(target)
+            handOver(target)
+            closeIfBlank(browser, scheme: scheme)
             return true
         }
         // One question at a time: a page asking again while it is up gets nothing.
@@ -98,16 +155,30 @@ enum AppLinkPrompt {
             CraLog.note("page \(page) asks for \(name) again, already asking")
             return true
         }
-        CraLog.note("page \(page) asks to open \(name) for \(scheme)")
-        // The target app's own icon, not the default brand mark (a ZCode prompt showing
-        // Cra's logo read as a Cra bug, the user's screenshot).
-        let alert = AppDialog(title: "Open \(name)?",
-                              message: "\(URL(string: browser.currentURL)?.host ?? "This site") wants to open this application.",
-                              actions: [DialogAction("Open \(name)"), .cancel],
+        let ask = AppLinks.ask(app: name, initiator: origin, rememberable: rememberable, pageHost: URL(string: browser.currentURL)?.host)
+        CraLog.note("page \(page) asks to open \(name) for \(scheme)" + (ask.alwaysAllow == nil ? "" : ", always allow offered for \(origin ?? "?")"))
+        let alert = AppDialog(title: ask.title, message: ask.message, actions: [DialogAction("Open \(name)"), .cancel],
+                              suppressionTitle: ask.alwaysAllow,
                               icon: .image(NSWorkspace.shared.icon(forFile: app.path)))
         alert.present(over: window) { response in
-            if response == .alertFirstButtonReturn { NSWorkspace.shared.open(target) }
+            guard response == .alertFirstButtonReturn else { return }
+            // "Always allow": kept in the page's profile as Chrome keeps it, so this origin opens the app from now on.
+            if alert.isSuppressed, let origin, browser.responds(to: #selector(CraBrowser.allowAppLink(scheme:fromOrigin:))) {
+                browser.allowAppLink(scheme: String(scheme.dropLast()), fromOrigin: origin)
+                CraLog.note("page \(page) always allows \(scheme) for its origin")
+            }
+            handOver(target)
+            closeIfBlank(browser, scheme: scheme)
         }
         return true
+    }
+
+    /// A new tab or window that never showed a page and was only sent to the app's address goes, as Chrome
+    /// closes it (AppLinks.closesRequester, #684). It closes itself, as a finished sign-in pop-up does, so its
+    /// tab or Little Window goes the way window.close() takes it.
+    private static func closeIfBlank(_ browser: CraBrowser, scheme: String) {
+        guard AppLinks.closesRequester(currentURL: browser.currentURL, canGoBack: browser.canGoBack) else { return }
+        CraLog.note("blank page closes: it only took \(scheme) to an app")
+        browser.executeJavaScript("window.close()")
     }
 }

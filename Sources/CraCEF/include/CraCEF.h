@@ -256,6 +256,9 @@ CRA_EXPORT @interface CraSSLStatus : NSObject
 /// The DevTools frontend shows `panel` ("elements", "console", "network", …): on load, and
 /// on every switch, from Cra or the frontend's own tab bar.
 - (void)browser:(CraBrowser *)browser devToolsShowsPanel:(NSString *)panel;
+/// The DevTools frontend asks for the keys: its bringToFront, and the element picker letting go after a pick on
+/// the page (whose click left the keys with the page).
+- (void)browserDevToolsWantsKeys:(CraBrowser *)browser;
 @end
 
 CRA_EXPORT @interface CraBrowser : NSObject
@@ -430,6 +433,34 @@ CRA_EXPORT @interface CraBrowser : NSObject
 /// One of Chrome's own commands by its IDC name ("IDC_ROUTE_MEDIA" for Cast…, "IDC_TASK_MANAGER"),
 /// where Chromium can run it for this page. NO when it can't.
 - (BOOL)runChromeCommand:(NSString *)name NS_SWIFT_NAME(runChromeCommand(_:));
+/// An extension's own command from its keyboard shortcut (chrome://extensions/shortcuts) outside Global scope:
+/// commands.onCommand with this page as the active tab, after granting activeTab if the extension asks for it, as
+/// Chrome's ExtensionKeybindingRegistry delivers it (#701). Chrome catches the key on its own browser window, which
+/// Cra never shows. NO when the extension isn't enabled in this page's profile.
+- (BOOL)runExtensionCommand:(NSString *)command extension:(NSString *)extensionID NS_SWIFT_NAME(runExtensionCommand(_:extension:));
+/// An extension's own rows in its toolbar button's menu (chrome.contextMenus with an "action" context), as
+/// Chrome's extension menu lists them above its own rows (#695): dictionaries with "id", "title", "enabled" and
+/// "checked" (NSNumber), "kind" ("normal", "checkbox", "radio", "separator") and "children" (the same, for a
+/// submenu). Empty when the extension isn't enabled in this page's profile or has none.
+- (NSArray<NSDictionary<NSString *, id> *> *)extensionActionMenuItems:(NSString *)extensionID NS_SWIFT_NAME(extensionActionMenuItems(_:));
+/// Runs one of those rows ("id") as Chrome's menu does: contextMenus.onClicked with this page as the tab.
+- (BOOL)runExtensionMenuItem:(NSString *)itemID extension:(NSString *)extensionID NS_SWIFT_NAME(runExtensionMenuItem(_:extension:));
+/// The extension's site access on this page, as Chrome's extension menu shows it (#695, legacy InitMenu): nil when
+/// it asks for none (no host permissions, no activeTab) or isn't enabled in this page's profile; @{"cantAccess": @YES}
+/// when it may never run here (PermissionsManager can't select "on click": chrome://, the Web Store); otherwise
+/// "site" (the host as the menu names it), "current" ("onClick", "onSite", "onAllSites") and "enabled" (the ones
+/// CanUserSelectSiteAccess allows). Engine only.
+- (nullable NSDictionary<NSString *, id> *)extensionSiteAccess:(NSString *)extensionID NS_SWIFT_NAME(extensionSiteAccess(_:));
+/// Sets it for this page's site ("onClick", "onSite", "onAllSites"), as Chrome's menu does (SitePermissionsHelper::
+/// UpdateSiteAccess). NO when Chromium wouldn't offer that choice here.
+- (BOOL)setExtensionSiteAccess:(NSString *)access extension:(NSString *)extensionID NS_SWIFT_NAME(setExtensionSiteAccess(_:extension:));
+/// Removes the extension from this page's profile, as chrome://extensions' Remove does (no dialog: the app asks).
+/// NO when Chromium can't (a policy-installed extension) or it isn't installed there.
+- (BOOL)uninstallExtension:(NSString *)extensionID NS_SWIFT_NAME(uninstallExtension(_:));
+/// "Always allow `origin` to open links of this type in the associated app" for `scheme`, kept in this page's profile as
+/// Chrome's external protocol dialog keeps it: that origin then opens the app without asking (GitHub #785). Only an
+/// origin Chrome may remember (appLinkOriginIsRememberable). Engine only; the CEF bridge does nothing.
+- (void)allowAppLinkScheme:(NSString *)scheme fromOrigin:(NSString *)origin NS_SWIFT_NAME(allowAppLink(scheme:fromOrigin:));
 - (void)executeJavaScript:(NSString *)script;
 /// Asks the page for its background colour again (-browser:didReportBackgroundColor:);
 /// pages can switch themes without a load.
@@ -485,12 +516,18 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 + (void)setImageSearchTitle:(NSString *_Nullable (^)(NSString *lensTitle))block;
 /// Run in every frame of every page browser before the page's own scripts (and once in the
 /// document already loaded): `script` in the page's world, `isolatedScript` in the isolated
-/// world named `world` (invisible to the page). Set before browsers are created.
+/// world named `world` (invisible to the page). Set before browsers are created; set again (the filter
+/// lists' scriptlets changed, #845), pages already open run the new scripts from their next document on
+/// (the Chromium engine; CEF pages keep theirs until they are made again).
 + (void)setDocumentStartScript:(NSString *)script isolatedScript:(NSString *)isolatedScript world:(NSString *)world;
 /// Third-party ad and tracker blocking: subresource and subframe requests whose host
 /// (or a parent domain) is on the blocked list are cancelled when they are third-party
 /// to the tab's top-level page. Main-frame navigations always load. Takes effect for
 /// the next request, any time, from any thread. Off until enabled.
+/// Chromium waits for the selected network rules in a newly loaded profile before navigating.
++ (void)setBundledNetworkRulesExpected:(BOOL)expected;
+/// Apply the most recent helper activation on the Chromium UI thread.
++ (void)synchronizeBundledNetworkFilter;
 + (void)setContentBlockingEnabled:(BOOL)enabled;
 + (BOOL)contentBlockingEnabled;
 /// Chrome's HTTPS-Only Mode ("Always use secure connections") in every profile:
@@ -524,6 +561,7 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 /// secure DNS setting changes.
 + (void)setSecureDNSChangeHandler:(nullable void (^)(void))handler;
 /// Replaces the blocked list (bare domains; a domain also covers its subdomains).
++ (void)setContentBlockingPausedHosts:(NSArray<NSString *> *)hosts;
 + (void)setBlockedDomains:(NSArray<NSString *> *)domains;
 /// Reads and installs a list file off the main thread: one domain per line or
 /// hosts-file lines ("0.0.0.0 example.com"), # comments. The completion gets the
@@ -543,6 +581,9 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
                            locale:(nullable NSString *)locale
                    useChromeStyle:(BOOL)useChromeStyle
                   useMockKeychain:(BOOL)useMockKeychain;
+/// Chromium features to turn on at start beside the engine's own (ChromiumStartFeatures), set before
+/// -runMessageLoop. The CEF bridge ignores them.
++ (void)setEnabledFeatures:(NSArray<NSString *> *)features;
 /// Runs the Chromium-integrated AppKit run loop. Returns after -quitMessageLoop.
 + (void)runMessageLoop;
 /// Runs `block` once Chromium is up and before the app finishes launching: at once with CEF (initialize
@@ -584,6 +625,14 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 /// returns YES when it took it (Cra's "Open <app>?"); then no tab opens (GitHub #207). On the
 /// main thread, before Peek and the delegate's popupHostForURL.
 + (void)setAppLinkHandler:(BOOL (^)(CraBrowser *browser, NSString *url, BOOL userGesture))handler;
+/// While the app-link handler runs (GitHub #785): the origin that started the address it is asked about, serialized
+/// ("https://zoom.us", "chrome-extension://<id>"; an extension's chrome.tabs.update is the extension's own), nil when
+/// there is none. Chrome's dialog names it and remembers "Always allow" for it.
++ (nullable NSString *)appLinkInitiatingOrigin;
+/// Whether Chrome may remember "Always allow" for that origin (a potentially trustworthy one).
++ (BOOL)appLinkOriginIsRememberable;
+/// Whether that origin was already allowed to open this kind of link: it opens the app without asking.
++ (BOOL)appLinkAllowedWithoutAsking;
 /// The page's right-click View Page Source and View Frame Source: the handler gets the page's browser
 /// and the address whose source to show, and opens it as Cra's View Source does (GitHub #348).
 + (void)setViewSourceHandler:(void (^)(CraBrowser *browser, NSString *url))handler;
@@ -616,7 +665,9 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 + (void)floatOverFullScreenSpaces:(NSWindow *)window;
 /// "shown=<n> away=<n> animated=<n>": the page and DevTools windows Chromium has shown, how many of
 /// them it showed off every Cra window that was on screen, and how many macOS animates in and out
-/// (GitHub #354), for cra://debug?pageWindows=.
+/// (GitHub #354), for cra://debug?pageWindows=. On the engine it goes on with
+/// "chrome=<n> chrome-away=<n> last-away=<class@x,y,wxh|none>": every window of Chromium's views ordered
+/// onto the screen, the ones that came up off every Cra window, and the last of those (GitHub #774).
 @property (class, nonatomic, readonly) NSString *pageWindowsReadout;
 /// "element=<0|1> shown=<0|1>" per profile's hidden Browser on the engine: whether Chrome finds the browser element its
 /// Settings look for, for cra://debug?hostBrowserView=. "no engine" on CEF.
@@ -624,6 +675,10 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 /// Scenarios only: hides (or shows again) each hidden Browser's view, so Chrome finds no browser element, as on the
 /// Mac where Clear browsing data's Cancel crashed. Does nothing on CEF.
 + (void)setPageHostBrowserViewsHidden:(BOOL)hidden;
+/// Scenarios only: a renderer process started inside the notice that the one before it ended, before Chrome's
+/// extensions system heard of the end; it CHECKed once that process launched (0.1.52 and 0.1.54 crash reports).
+/// Its steps go to Chrome's log ("renderer reuse: …"). Does nothing on CEF.
++ (void)reuseRendererInsideExitNotice;
 + (NSString *)chromiumVersion;
 + (NSString *)cefVersion;
 /// YES when the browser-level DevTools pipe is up (it needs fds 3/4 free at start-up).
@@ -654,6 +709,32 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 /// Default), as JSON. Chromium writes it to Preferences ~10 s after a change. nil until
 /// that profile has loaded.
 + (nullable NSString *)extensionSettingsForProfile:(nullable NSString *)profilePath;
+/// Shared extensions (GitHub discussion #595): by profile folder name ("Default", "Profile <id>"), the extensions Cra
+/// keeps installed there. Chrome can't remove them then (chrome://extensions has no Remove, chrome.management.uninstall
+/// and the Web Store's "Remove from Chrome" are refused) and chrome://extensions says "Managed by Cra". Replaces the
+/// whole map; a profile that loads later takes its list as it loads. Does nothing on CEF.
++ (void)setManagedExtensionIDs:(NSDictionary<NSString *, NSArray<NSString *> *> *)idsByProfile;
+/// Installs a Chrome Web Store extension in a loaded profile (nil profilePath is Default), as Cra.installFromWebStore
+/// does in a page's: the store's signed CRX, no prompt, and the store's version may not ask for more than
+/// `manifestJSON` (the copy the person has). The completion gets nil once it is installed (or already was), else why
+/// not, on the main queue. This doesn't load the profile. Fails on CEF.
++ (void)installWebStoreExtension:(NSString *)extensionID manifest:(NSString *)manifestJSON
+                     profilePath:(nullable NSString *)profilePath
+                      completion:(void (^)(NSString * _Nullable error))completion;
+/// Uninstalls an extension from a loaded profile (nil profilePath is Default) with its data, as chrome://extensions'
+/// Remove does, without asking. NO when the profile hasn't loaded (this doesn't load it), the extension isn't there,
+/// or a policy keeps it: take it out of setManagedExtensionIDs first. NO on CEF.
++ (BOOL)uninstallExtension:(NSString *)extensionID profilePath:(nullable NSString *)profilePath
+    NS_SWIFT_NAME(uninstallExtension(_:profilePath:));
+/// Shared extensions whose data comes from one profile (discussion #595's follow-up): by extension ID, a dictionary
+/// with "home" (the profile folder it was set up in) and "profiles" (the folders sharing it, home among them). In those
+/// profiles the extension's chrome.storage.local and .sync read and write the home's, and storage.onChanged reaches it
+/// in all of them; websites' cookies and logins stay each profile's own. Replaces the whole map. Does nothing on CEF.
++ (void)setSharedExtensionStorage:(NSDictionary<NSString *, NSDictionary<NSString *, id> *> *)homes;
+/// Turns an extension on or off in a loaded profile (nil profilePath is Default), as chrome://extensions' switch does.
+/// NO when the profile hasn't loaded (this doesn't load it) or the extension isn't there. NO on CEF.
++ (BOOL)setExtensionEnabled:(NSString *)extensionID enabled:(BOOL)enabled profilePath:(nullable NSString *)profilePath
+    NS_SWIFT_NAME(setExtensionEnabled(_:enabled:profilePath:));
 /// A profile's pref as Chromium holds it now (nil profilePath is Default), as JSON: how Cra reads
 /// `default_search_provider_data.template_url_data`, the engine chrome://settings/searchEngines
 /// made the default. nil until that profile has loaded.
@@ -664,6 +745,17 @@ CRA_EXPORT @interface CraCEFRuntime : NSObject
 /// Puts a profile's pref back to Chromium's default (PrefService::ClearPref). NO when the profile hasn't
 /// loaded, a policy holds the pref, or Chromium has no pref of that name.
 + (BOOL)resetPreference:(NSString *)name forProfile:(nullable NSString *)profilePath;
+/// The profile's Chromium history (nil profilePath is Default) searched for `text`, as Arc's command bar asks
+/// the profile's HistoryService (GitHub #730): every page whose title or address has a word starting with each
+/// typed word, the most recently visited first, at most `maxCount`. Each row: url, title, visitCount, typedCount,
+/// lastVisit (seconds since 1970). On the main queue; empty when the profile hasn't loaded (this doesn't load it)
+/// or a newer search started before this one ran.
++ (void)searchHistory:(NSString *)text profilePath:(nullable NSString *)profilePath maxCount:(NSInteger)maxCount
+           completion:(void (^)(NSArray<NSDictionary<NSString *, id> *> *rows))completion;
+/// Deletes the page at `url` from the profile's Chromium history (nil profilePath is Default), every visit, as
+/// Arc's command bar Delete Suggestion does (GitHub #779). NO when the profile hasn't loaded or `url` isn't an
+/// address; this doesn't load the profile.
++ (BOOL)deleteHistoryURL:(NSString *)url profilePath:(nullable NSString *)profilePath;
 /// Whether a profile (nil is Default) has loaded in this session: 2 ready, 1 loading (its prefs are being
 /// read), 0 not asked for, so nothing in this process has its Preferences file open.
 + (NSInteger)loadStateOfProfile:(nullable NSString *)profilePath;

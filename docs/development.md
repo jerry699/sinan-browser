@@ -27,7 +27,8 @@ Cra runs on Chrome's own framework with a thin layer of Cra's code built into it
 `scripts/build-chromium.sh` builds it from a Chrome stable tag (~45 GB, 2–4 h a CPU) with the layer, Cra's
 patches and ungoogled-chromium's in `engine/chromium` (`apply.sh` puts them in the tree);
 `CRA_ENGINE_OUT=<out dir> scripts/build.sh` builds the app on such a local build. `scripts/check-engine-update.sh`
-says when Chrome has a newer stable; a release needs the newest.
+says when the engine lacks a security fix Chrome stable has shipped (each CVE in Chrome's release posts, traced
+through Chromium's commits) or stable is newer; a release needs every fix.
 
 `CRA_ENGINE=cef scripts/build.sh` still builds on CEF: `scripts/fetch-cef.sh` downloads Cra's CEF build
 (`scripts/build-cef.sh`, `scripts/cef-patches`, published by `scripts/publish-cef.sh`) into `vendor/cef`, and
@@ -63,7 +64,7 @@ and a Chromium profile folder. Delete it to
 start over.
 
 Settings ▸ General ▸ Sync keeps `sidebar.json`, `settings.json` (minus each Mac's own fields,
-`AppSettings.forSync`) and `keybindings.json` the same on the user's Macs, through iCloud
+`AppSettings.forSync`), `keybindings.json` and the easels the same on the user's Macs, through iCloud
 (`Documents/Cra` in the app's iCloud Documents container; docs/release.md says how the signed
 build gets the entitlement) or through a folder a file provider syncs: `SettingsSyncService`
 writes them with a `manifest.json` into a `Cra` folder there and applies a newer bundle another
@@ -77,7 +78,24 @@ bundle's manifest names the bundles its Mac had written or applied, newest first
 Mac that has one of them (`sync-history.json`, the last eight written or applied, `SyncHistory`)
 merges the bundle with what changed here since the newest it has (`SidebarMerge` in CraCore: a tab closed on either Mac stays
 closed, a tab opened on either is on both, an item both changed takes the other Mac's) and writes
-the merge back. A bundle from an older Cra, or from one too far back, is applied whole. `cra://debug?sync=<label>` logs what the last look found. `sync.json` in the data
+the merge back. A bundle from an older Cra, or from one too far back, is applied whole. Easels go in
+the bundle's `Easels/` as in the data folder: `<id>.json` and the pictures its cards show in `<id>/`,
+each with its hash under the manifest's `easels` (not `files`, so an older Cra still finds the bundle
+whole). A picture the writing Mac lacks is left out, and one already in the folder stays only when its hash
+matches. A bundle applies whole, pictures first, then the easels, then the sidebar; a picture the bundle
+carries that this Mac lacks is copied whether or not its easel changed. Picture reads, hashes and copies run
+off the main thread before the rest of a write or an apply, one task at a time; Export… and Import… run theirs the same
+way, and Settings turns both off until they answer. A write whose pictures copied while another Mac wrote takes that
+bundle first, as a look does. Each easel merges three ways (`Easel.merge`) against the newest bundle the
+writer names under `easelParentIDs`, the parents it had easels for, and one deleted on either Mac
+goes. With none of them here, easels are added and overwritten and none is deleted, and a blank
+`Easel(id:)` (what an older Cra saves when a tab opens a row it has no file for) never replaces a real one. Import… and Use That Sidebar add and overwrite easels and delete none. A
+manifest without `easels` (an older Cra's) changes no easel, and the next write puts this Mac's back.
+After writing its manifest a Mac removes what `Easels/` holds that the manifest doesn't name. A Mac that
+can't list its data folder's `Easels/`, or can't read an easel file it has no other copy of, writes no bundle, and
+Settings names what it can't read. A
+watcher on the data folder's `Easels/` writes a change within seconds, as for the sidebar.
+`cra://debug?sync=<label>` logs what the last look found. `sync.json` in the data
 folder holds the location and the last bundle written or applied. To try it on one Mac, run a second instance on another
 `CRA_DATA_DIR` with `CRA_SYNC_DEVICE=<name>` (a Mac is known in the folder by a hash of its
 hardware UUID, which two instances share);
@@ -115,6 +133,12 @@ CI runs the same tests on every pull request and push to main (no CEF download),
 `scripts/coverage.py` plus `scripts/lint.py`, and the smoke test on the app it builds. A change
 to Markdown or `docs/` alone runs nothing.
 
+A harness that needs CraCore sources `scripts/harness-cracore.sh` and puts `"${CRACORE[@]}"` on
+its `swiftc` line instead of CraCore's files. CraCore is then built once as a library, with the
+harness's `CRA_TEST_SWIFTC_FLAGS`, and kept in `build/harness-cracore/` until its sources, those
+flags or the compiler change. Compiling CraCore's 370 files inside each harness took most of CI's
+time, on one core.
+
 - `Packages/CraCore` (`swift test --package-path Packages/CraCore`): a package of its own, so
   its tests build without `vendor/cef`. Code that decides something without a window or a
   page belongs here, with a test: a layout rule, a mapping from Arc's or Chromium's files,
@@ -127,6 +151,9 @@ to Markdown or `docs/` alone runs nothing.
   few production files with `swiftc` against fakes (`Tests/BrowserManagerSupport` stands in
   for CraCEF and the rest of the app). When the manager calls something new from the app, add
   a stub to `AppServices.swift`.
+- `scripts/test-site-icons.sh`: `SiteIconLoader` and `FaviconCache` against an HTTP server on
+  127.0.0.1: a site that never answers, a dropped connection, redirects, the candidate limit, an
+  icon that claims 20000 px, and a PDF served as an icon.
 - `scripts/test-store.sh`: the real `SidebarStore`, `AppComposition` and importers on a
   `ManualScheduler`, against the made-up Arc and Chromium profiles in `Tests/Fixtures`.
 - `scripts/test-tidy-downloads.sh`: `TidyDownloadsService` and `TidyDownloadFiles` on real files
@@ -144,8 +171,14 @@ to Markdown or `docs/` alone runs nothing.
   cleanup. `scripts/test-tidy-titles-model.sh` checks Arc's answer schema; `--real` also asks the
   Mac's own model (needs Apple Intelligence) for 18 sample titles and prints the names a 230 pt row
   would pick.
+- `scripts/test-filter-group-card.sh`: opens and closes a filter group using its accessibility button and checks the visible rows and selected count. The harness accepts the standard coverage flags.
+- `scripts/test-dns-provider-menu.sh`: hosts the DNS over HTTPS popup in AppKit and checks
+  the selection binding, provider endpoint tooltips and managed (disabled) state. Runs from
+  `scripts/test.sh` and accepts `CRA_TEST_SWIFTC_FLAGS` and `CRA_TEST_KEEP` for coverage.
 - `scripts/test-policies.sh`: the decisions pulled out of the window controllers
   (`ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
+- `scripts/test-skipped-list.sh`: the import window's skipped list (`SkippedList`) off screen: 8,500
+  rows open in under 2 s, built as they scroll in, and the list is as tall as its rows up to 280 pt.
 - `scripts/test-content-blocker.sh`: the engine's ad and tracker matching
   (`Sources/CraCEF/CraContentBlocker.h`) on Cra's own list, through a C shim: sites' own hosts
   stay first party, and what a site needs to load isn't on the list (Reddit, #586).

@@ -51,6 +51,55 @@ public enum BackForwardMenu {
         }
     }
 
+    /// ⌘-click on Back or Forward (GitHub #797): Arc opens the nearest page that way in a new tab that
+    /// comes to the front, at the top of Today, and the tab clicked stays on its page (Arc 1.174.2,
+    /// offline, 25 Nov 2026: three pages, ⌘-click Back on the third opened the second above it,
+    /// selected). Only a click with ⌘ does: ⌘[ and the menu's Back keep going back in the tab.
+    public static func opensNewTab(commandHeld: Bool, byMouse: Bool) -> Bool { commandHeld && byMouse }
+
+    /// The page that new tab opens, from a `Page.getNavigationHistory` reply: the nearest one that way,
+    /// with its own title (empty when it had none); nil at the end of the history.
+    public static func newTabPage(history json: String, direction: Direction) -> Row? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let current = object["currentIndex"] as? Int,
+              let entries = object["entries"] as? [[String: Any]] else { return nil }
+        let list = entries.map { e in
+            Row(entryID: e["id"] as? Int ?? -1, title: e["title"] as? String ?? "", url: e["url"] as? String ?? "")
+        }
+        guard let nearest = rows(entries: list, currentIndex: current, direction: direction).first,
+              let own = list.first(where: { $0.entryID == nearest.entryID }) else { return nil }
+        return own
+    }
+
+    /// What picking a row of the history menu does.
+    public enum Pick: Equatable, Sendable {
+        /// The tab goes straight to that page (`Page.navigateToHistoryEntry`).
+        case goThere
+        /// That page opens in a new tab that comes to the front, and the tab stays on its page, as a
+        /// ⌘-click on Back or Forward does (#797).
+        case newTab
+    }
+
+    /// A row picked with ⌘ held, by a click or ⌘Return, opens its page in a new tab, the way ⌘-click on
+    /// Back or Forward opens the nearest one (#797); ⇧ or ⌥ with it change nothing. Arc 1.174.3 carries
+    /// an `isAlternate` flag with the history item its BackForwardList feature goes to, one action for
+    /// the button and the menu, so a ⌘-picked row does what a ⌘-clicked button does (static evidence,
+    /// the Arc binary; not tried live). Chrome's menu opens it in the background instead.
+    public static func pick(commandHeld: Bool) -> Pick { commandHeld ? .newTab : .goThere }
+
+    /// The page a ⌘-picked row opens, from the `Page.getNavigationHistory` reply the menu was built
+    /// from: entry `entryID` with its own title (empty when it had none, not the row's address); nil when
+    /// the reply has no such entry.
+    public static func newTabPage(history json: String, entryID: Int) -> Row? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = object["entries"] as? [[String: Any]],
+              let e = entries.first(where: { $0["id"] as? Int == entryID }),
+              let url = e["url"] as? String, !url.isEmpty else { return nil }
+        return Row(entryID: entryID, title: e["title"] as? String ?? "", url: url)
+    }
+
     /// An address as a row shows it: no scheme, no trailing slash.
     public static func displayURL(_ url: String) -> String {
         var s = url

@@ -28,6 +28,9 @@ final class CommandBarController {
     /// Arc's address panel (#663): opened by a click on the sidebar's address, it hangs from that
     /// field, sized to the address (CraCore SidebarAddressPanel), not centred in the window.
     var compact = false
+    /// Arc's ⌘L on a page with the developer bar (#663 follow-up): the bar's address edited in place, the panel over the
+    /// bar and across the card (CraCore DeveloperBarPanel). nil for every other bar.
+    var developer: CommandBarDeveloperInput?
     /// The space whose palette colours the selected row and the info badge (CraCore CommandBarTones).
     var theme: SpaceTheme?
     var focusedSpaceID: UUID?
@@ -76,6 +79,7 @@ final class CommandBarController {
     }
 
     var placeholder: String {
+        if case .site(let site)? = scope { return site.placeholder }
         if scope != nil { return "Search…" }
         switch mode {
         case .newTab: return L10n.tr("Search or Enter URL…")
@@ -100,9 +104,18 @@ final class CommandBarController {
         selectedIndex = 0
         previewText = nil
         noticePressed = false
-        result = listed(engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown))
+        result = listed(engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown, folderSpace: window == .browser ? focusedSpaceID : nil))
         isOpen = true
         if onInstantLinks != nil { InstantLinksService.shared.prewarm(store) }
+    }
+
+    /// The window's space changed under the open bar: its tab list follows, as Arc's does (#721).
+    /// "Only this space's tabs" and the other-space labels both read the space when the bar lists.
+    func follow(space: UUID) {
+        guard isOpen, focusedSpaceID != space else { return }
+        focusedSpaceID = space
+        engine.spaceChanged()
+        if scope == .tabs { update(query: query, allowCompletion: allowCompletion) } else { relist() }
     }
 
     /// Replace the typed text (scripting / tests).
@@ -140,6 +153,11 @@ final class CommandBarController {
             self.relist()
         }
         result = listed(engine.suggestions(for: newQuery, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown))
+        engine.fetchHistory(for: typed, spaceShown: spaceShown) { [weak self] in
+            guard let self, self.isOpen, self.query == typed else { return }
+            self.relist()
+        }
+        result = listed(engine.suggestions(for: newQuery, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown, folderSpace: window == .browser ? focusedSpaceID : nil))
         if !allowCompletion { result.inlineCompletion = nil }
         selectedIndex = 0
         previewText = nil
@@ -149,7 +167,7 @@ final class CommandBarController {
     private func relist() {
         guard scope == nil else { return }
         let selectedID = result.items.indices.contains(selectedIndex) ? result.items[selectedIndex].id : nil
-        result = listed(engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown))
+        result = listed(engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown, folderSpace: window == .browser ? focusedSpaceID : nil))
         if !allowCompletion { result.inlineCompletion = nil }
         if let i = result.items.firstIndex(where: { $0.id == selectedID }) {
             selectedIndex = i
@@ -176,7 +194,7 @@ final class CommandBarController {
     private func fillText(for s: Suggestion) -> String {
         if s.id == "typed" { return query }
         switch s.kind {
-        case .search, .command, .switchSpace, .moveToSpace, .moveToFolder:
+        case .search, .command, .switchSpace, .moveToSpace, .moveToFolder, .revealFolder:
             return s.title
         case .switchToTab, .archived, .history, .navigate, .topDomain:
             guard let url = s.url else { return s.title }
@@ -194,6 +212,13 @@ final class CommandBarController {
         scope = offered
         pushFieldText("")
         return true
+    }
+
+    /// ⌥⌘G with ChatGPT in the Command Bar on (#828): the bar, just opened, scoped to ChatGPT, as Arc's is.
+    func openScoped(to site: SiteSearch) {
+        scopeTyped = ""
+        scope = .site(site)
+        pushFieldText("")
     }
 
     /// Backspace on the empty scoped field: back to what was typed, the hint showing again.
@@ -309,7 +334,10 @@ final class CommandBarController {
     }
 
     /// Row places the panel is sized for: the rows and the banner.
-    var rowPlaces: Int { SearchSuggestionsNotice.rowPlaces(rows: result.items.count, banner: showsNoticeBanner) }
+    /// The places the bar is sized for: the rows in view (Arc's five; more scroll behind them, #805) and the banner's.
+    var rowPlaces: Int {
+        SearchSuggestionsNotice.rowPlaces(rows: CommandBarRowWindow.shown(count: result.items.count, banner: showsNoticeBanner), banner: showsNoticeBanner)
+    }
 
     /// The (i): the banner takes the last row's place.
     func showNotice() {
@@ -336,6 +364,28 @@ final class CommandBarController {
         onNoticeLearnMore()
     }
 
+    /// Whether row `index` is a visited page's, which Arc's ✕ and ⌥⌘⌫ delete (#779).
+    func canDelete(row index: Int) -> Bool {
+        guard scope == nil, result.items.indices.contains(index), !store.window().isIncognito else { return false }
+        return SuggestionDeletion.page(rowID: result.items[index].id) != nil
+    }
+
+    /// Arc's Delete Suggestion (#779): row `index` (the ✕ clicked) or the selected row (⌥⌘⌫) leaves the bar's
+    /// profile's history and the list; the selection stays on its line. false when the row isn't a visited page's.
+    @discardableResult
+    func delete(row index: Int? = nil) -> Bool {
+        let i = index ?? selectedIndex
+        guard canDelete(row: i), engine.delete(result.items[i]) else { return false }
+        let selectedID = i == selectedIndex ? nil : result.items.indices.contains(selectedIndex) ? result.items[selectedIndex].id : nil
+        result = listed(engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID, spaceShown: spaceShown))
+        if !allowCompletion { result.inlineCompletion = nil }
+        selectedIndex = result.items.firstIndex { $0.id == selectedID }
+            ?? SuggestionDeletion.selection(afterDeleting: i, count: result.items.count)
+        previewText = selectedIndex == 0 ? nil : result.items.indices.contains(selectedIndex) ? fillText(for: result.items[selectedIndex]) : nil
+        previewVersion += 1
+        return true
+    }
+
     /// The pointer is over row `index`: it selects the row once the pointer has moved since the
     /// rows last changed (CraCore HoverGate, #382).
     func hover(row index: Int) {
@@ -343,14 +393,18 @@ final class CommandBarController {
         selectedIndex = index
     }
 
-    /// What the engine listed, less the last row while the banner has its place.
+    /// What the engine listed, as this window lists it. All of it: the rows past the ones in view
+    /// scroll into it (#805); the banner takes a place in view, not a row.
     private func listed(_ r: SuggestionResult) -> SuggestionResult {
         hoverGate.listChanged(pointerAt: NSEvent.mouseLocation)
         var r = r
         r.items = r.items.map(inWindow)
-        let n = SearchSuggestionsNotice.rowsListed(r.items.count, maxRows: SuggestionEngine.maxRows, banner: showsNoticeBanner)
-        if n < r.items.count { r.items.removeLast(r.items.count - n) }
         return r
+    }
+
+    /// The list scrolled under a resting pointer (#805): the row now under it isn't hovered.
+    func listScrolled() {
+        hoverGate.listChanged(pointerAt: NSEvent.mouseLocation)
     }
 
     /// An open tab's or an archived page's row as this window's bar lists it: in a Little Window, a
@@ -409,6 +463,17 @@ final class CommandBarPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// ⌥⌘⌫ deletes the selected visited page, as Arc's Delete Suggestion (#779). The field editor never turns it into a
+    /// command (⌘⌫ and ⌥⌫ are its own), so the panel takes it as it arrives; on any other row it does nothing.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, SuggestionDeletion.isShortcut(keyCode: event.keyCode, modifiers: event.modifierFlags.rawValue),
+           let bar = contentView as? CommandBarView {
+            bar.deleteSelectedSuggestion()
+            return
+        }
+        super.sendEvent(event)
+    }
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 680, height: 60),

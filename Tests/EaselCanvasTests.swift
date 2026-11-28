@@ -105,7 +105,9 @@ enum EaselCanvasTests {
         drawingAndMenus(window)
         longText()
         severalItems()
+        resizeLikeArc()
         endlessCanvas()
+        captureEditor()
         window.close()
         print("Easel canvas: selection, movement, editing and deletion passed")
     }
@@ -230,6 +232,65 @@ enum EaselCanvasTests {
         print("Easel canvas: long text widens, wraps and takes Return (#580)")
     }
 
+    // promise: #680
+    /// Arc 1.174.1's handles (22 Nov 2026): a shape resizes from anywhere along an edge, that side only; a text box takes
+    /// its width from its left or right edge and wraps at it, stays as tall as its text (its bottom edge moves nothing),
+    /// and keeps that width as it's typed in. Before, text didn't resize and shapes only from their corners.
+    @MainActor
+    static func resizeLikeArc() {
+        let shape = Easel.Item(kind: .rectangle, frame: .init(x: 100, y: 150, width: 200, height: 100))
+        let note = Easel.Item(kind: .text("Hello there, a note on the easel", size: 18), frame: .init(x: 100, y: 450, width: 240, height: 27))
+        let sheet = EaselSheetView(document: Easel(items: [shape, note]))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = sheet
+        sheet.layoutSubtreeIfNeeded()
+        defer { window.close() }
+        let field = sheet.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == note.id.uuidString }!
+        func event(_ type: NSEvent.EventType, _ p: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: sheet.convert(p, to: nil), modifierFlags: [], timestamp: 1,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        }
+        func click(_ p: NSPoint) { sheet.mouseDown(with: event(.leftMouseDown, p)); sheet.mouseUp(with: event(.leftMouseUp, p)) }
+        func drag(_ from: NSPoint, _ to: NSPoint) {
+            sheet.mouseDown(with: event(.leftMouseDown, from))
+            sheet.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: (from.x + to.x) / 2, y: (from.y + to.y) / 2)))
+            sheet.mouseDragged(with: event(.leftMouseDragged, to))
+            sheet.mouseUp(with: event(.leftMouseUp, to))
+        }
+        func item(_ id: UUID) -> Easel.Item { sheet.document.items.first { $0.id == id }! }
+
+        // The shape: its right edge near the top (not its middle) widens it; its top edge raises it.
+        click(NSPoint(x: 200, y: 200))
+        drag(NSPoint(x: 300, y: 165), NSPoint(x: 400, y: 165))
+        precondition(item(shape.id).frame == .init(x: 100, y: 150, width: 300, height: 100), "a shape's edge resizes that side: \(item(shape.id).frame)")
+        drag(NSPoint(x: 330, y: 150), NSPoint(x: 330, y: 120))
+        precondition(item(shape.id).frame == .init(x: 100, y: 120, width: 300, height: 130), "its top edge too: \(item(shape.id).frame)")
+
+        // The text box: wider from its right edge, on one line, as tall as before.
+        click(NSPoint(x: 150, y: 460))
+        let fitted = item(note.id).frame
+        drag(NSPoint(x: fitted.x + fitted.width, y: fitted.y + 4), NSPoint(x: fitted.x + fitted.width + 200, y: fitted.y + 4))
+        let wide = item(note.id)
+        precondition(wide.fixedWidth == true && wide.frame.x == fitted.x && wide.frame.width == fitted.width + 200 && wide.frame.height == fitted.height,
+                     "a text box's right edge sets its width: \(fitted) → \(wide.frame)")
+        // Narrower than its line: it wraps and grows down, its height still its text's.
+        drag(NSPoint(x: wide.frame.x + wide.frame.width, y: wide.frame.y + 4), NSPoint(x: wide.frame.x + 120, y: wide.frame.y + 4))
+        let narrow = item(note.id)
+        precondition(narrow.frame.width == 120 && narrow.frame.height > fitted.height * 1.5, "narrowed, the text wraps: \(narrow.frame)")
+        // Its bottom edge moves nothing.
+        drag(NSPoint(x: narrow.frame.x + 60, y: narrow.frame.y + narrow.frame.height), NSPoint(x: narrow.frame.x + 60, y: narrow.frame.y + narrow.frame.height + 80))
+        precondition(item(note.id).frame == narrow.frame, "a text box's bottom edge leaves it as tall as its text: \(item(note.id).frame)")
+        // Typing keeps the width the drag set (Easel.textBoxWidth): the box grows down, not across.
+        field.stringValue = "Hello there, a note on the easel, now a good deal longer than before"
+        sheet.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        precondition(item(note.id).frame.width == 120 && item(note.id).frame.height > narrow.frame.height, "typing keeps the width: \(item(note.id).frame)")
+        // Undo goes back through the drags; the first one takes the box back to fitting its text.
+        sheet.undo(nil); sheet.undo(nil); sheet.undo(nil)
+        precondition(item(note.id).fixedWidth == nil && item(note.id).frame.width == fitted.width, "Undo takes the width back: \(item(note.id))")
+        print("Easel canvas: shapes resize from their edges, text boxes take a dragged width and keep it (#680)")
+    }
+
     // promise: #580
     /// Picking several items as on the rest of the Mac (#580): ⌘- and ⇧-click add and remove, a drag from
     /// empty canvas draws a box that picks what it touches, and the picked items move, snap, colour,
@@ -344,6 +405,53 @@ enum EaselCanvasTests {
         sheet.cut(nil)
         precondition(sheet.document.items.count == 3 && sheet.picked.isEmpty, "Cut removes every picked item")
         print("Easel canvas: several items picked, moved, layered, copied and deleted together (#580)")
+    }
+
+    /// Arc's image editor for a capture (Capture ▸ Edit, #851): the capture in a card in the middle at a point per
+    /// pixel, Easel's seven tools without Duplicate, and what is drawn on it goes into the capture, at its pixels, when
+    /// a click lands on the dark page around the card. Closing with nothing drawn hands back the capture as it was.
+    // promise: #851
+    @MainActor
+    static func captureEditor() {
+        let ctx = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        let capture = ctx.makeImage()!
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 1000, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+        func open() -> CaptureEditorView {
+            let editor = CaptureEditorView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800), image: capture)
+            window.contentView = NSView(frame: editor.frame)
+            window.contentView!.addSubview(editor)
+            editor.layoutSubtreeIfNeeded()
+            return editor
+        }
+        let editor = open()
+        precondition(editor.cardFrame == NSRect(x: 300, y: 250, width: 400, height: 300), "the capture is in the middle, a point per pixel")
+        precondition(!editor.toolbar.showsDuplicate && editor.toolbar.frame == NSRect(x: 12, y: 300 - 12 - 44, width: 272, height: 44),
+                     "Easel's seven tools at the card's bottom left")
+        precondition(editor.sheet.editsImage, "the sheet has no title over a capture")
+        editor.sheet.insert(Easel.Item(kind: .rectangle, frame: .init(x: 20, y: 20, width: 100, height: 80)))
+        var out: CGImage?
+        editor.onDone = { out = $0 }
+        // A click on the dark page around the card closes the editor.
+        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: editor.convert(NSPoint(x: 10, y: 10), to: nil), modifierFlags: [],
+                                       timestamp: 1, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        editor.mouseDown(with: click)
+        guard let out else { preconditionFailure("a click beside the card closes the editor with the capture") }
+        precondition(out.width == 400 && out.height == 300 && editor.superview == nil, "the edited capture keeps its pixels and the editor goes")
+        let rep = NSBitmapImageRep(cgImage: out)
+        let inside = rep.colorAt(x: 70, y: 60)!.usingColorSpace(.deviceRGB)!, outside = rep.colorAt(x: 300, y: 250)!.usingColorSpace(.deviceRGB)!
+        precondition(abs(inside.redComponent - 1) + abs(inside.greenComponent - 1) + abs(inside.blueComponent - 1) > 0.2,
+                     "the rectangle is drawn into the capture")
+        precondition(outside.redComponent > 0.98 && outside.greenComponent > 0.98 && outside.blueComponent > 0.98, "the rest of the capture is as taken")
+        let untouched = open()
+        var back: CGImage?
+        untouched.onDone = { back = $0 }
+        untouched.finish()
+        precondition(back === capture, "with nothing drawn the capture comes back as it was")
+        window.close()
+        print("Easel canvas: Capture ▸ Edit draws on the capture as Arc's editor does (#851)")
     }
 
     /// Every kind of item drawn as Arc draws it (pixels checked), the picker's colours, the canvas menu,
@@ -581,6 +689,19 @@ enum EaselCanvasTests {
         precondition(sheet.document.items.count == before, "plain text is not a link")
         sheet.deleteSelected()
         precondition(!sheet.document.items.contains { if case .link = $0.kind { return true }; return false }, "the link card deletes")
+
+        // A page read after the easel was deleted fills nothing in, so it can't make the easel again.
+        var late: ((EaselLinkMetadata?, Data?, Data?) -> Void)?
+        EaselHooks.fetchLink = { _, done in late = done }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("https://example.com/late", forType: .string)
+        sheet.paste(nil)
+        let deletedEasel = sheet.document
+        EaselFiles.deleted.insert(deletedEasel.id)
+        late?(EaselLinkMetadata(title: "Late post", summary: "Text"), nil, nil)
+        EaselFiles.deleted.remove(deletedEasel.id)
+        precondition(sheet.document == deletedEasel, "a page read after the easel was deleted changes nothing")
+        sheet.deleteSelected()
 
         // Alignment guides: a move that ends 4 pt off another item's left edge lines up with it.
         let other = sheet.document.items.first { $0.id == rect.id }!

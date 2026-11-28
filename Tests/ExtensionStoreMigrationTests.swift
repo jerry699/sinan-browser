@@ -195,8 +195,193 @@ enum ExtensionStoreMigrationTests {
         }
     }
 
+    /// An incognito window lists, pins and runs only the extensions its profile allows in incognito
+    /// (chrome://extensions ▸ Allow in Incognito, `incognito` in extensions.settings), as Chrome's toolbar
+    /// does for an off-the-record profile. Cra listed every turned-on one there, and those did nothing.
+    // promise: #620
+    static func incognitoListsOnlyAllowed() throws {
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CRA_DATA_DIR"]!, isDirectory: true)
+        AppPaths.supportDir = root.appendingPathComponent("incognito-allowed", isDirectory: true)
+        CraCEFRuntime.settingsByProfile = [:]
+        let fm = FileManager.default
+        var ids: [String: String] = [:]
+        for name in ["ublock", "proton-pass", "dark-reader"] {
+            let folder = ExtensionStore.directory.appendingPathComponent(name, isDirectory: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["manifest_version": 3, "name": name, "version": "1.0"])
+                .write(to: folder.appendingPathComponent("manifest.json"))
+            ids[name] = ExtensionStore.chromiumID(key: nil, folder: folder)
+        }
+        func loaded(_ name: String, _ extra: [String: Any] = [:]) -> [String: Any] {
+            ["location": 8, "path": ExtensionStore.directory.appendingPathComponent(name).path].merging(extra) { _, b in b }
+        }
+        // uBlock allowed in incognito, Proton Pass not, Dark Reader allowed but turned off.
+        let settings: [String: Any] = [
+            ids["ublock"]!: loaded("ublock", ["incognito": true]),
+            ids["proton-pass"]!: loaded("proton-pass"),
+            ids["dark-reader"]!: loaded("dark-reader", ["incognito": true, "state": 0, "disable_reasons": [1]]),
+        ]
+        let profile = AppPaths.chromiumCache.appendingPathComponent("Default", isDirectory: true)
+        try writeSettings(settings, in: profile)
+        // Profile 1 allows Proton Pass in incognito and nothing else.
+        let work = AppPaths.chromiumCache.appendingPathComponent("Profile 1", isDirectory: true)
+        try writeSettings([ids["ublock"]!: loaded("ublock"), ids["proton-pass"]!: loaded("proton-pass", ["incognito": true])], in: work)
+
+        let store = ExtensionStore()
+        let names = { (profile: String, incognito: Bool) in
+            Set(store.entries(inProfile: profile, incognito: incognito).map(\.name))
+        }
+        check(names("Default", false) == ["ublock", "proton-pass"], "a normal window lists every turned-on extension")
+        check(names("Default", true) == ["ublock"], "an incognito window lists only the ones allowed in incognito (#620)")
+        check(names("Profile 1", true) == ["proton-pass"], "and that is its own profile's Allow in Incognito")
+
+        // Allow in Incognito switched on in chrome://extensions: the live settings say so at once.
+        var live = settings
+        live[ids["proton-pass"]!] = loaded("proton-pass", ["incognito": true])
+        CraCEFRuntime.settingsByProfile["Default"] = String(decoding: try JSONSerialization.data(withJSONObject: live), as: UTF8.self)
+        store.reload()
+        check(names("Default", true) == ["ublock", "proton-pass"], "switching Allow in Incognito on lists it in incognito")
+    }
+
+    // promise: #757
+    /// Arc's pinned extensions seed Cra's toolbar only once the person imported from Arc: before
+    /// that, Cra reads nothing in Arc's folder (macOS showed "Data Access Blocked" on first launch).
+    static func pinnedComeOnlyFromAnImportedBrowser() throws {
+        for imported in [false, true] {
+            try run("pinned-from-arc-\(imported)") { install in
+                try install.installStoreCopy()
+                try install.writeSettings(install.settings())
+                let arcProfile = ImportSource.arc.dataDir.appendingPathComponent("Default", isDirectory: true)
+                try FileManager.default.createDirectory(at: arcProfile, withIntermediateDirectories: true)
+                try JSONSerialization.data(withJSONObject: ["extensions": ["pinned_extensions": [install.id]]])
+                    .write(to: arcProfile.appendingPathComponent("Preferences"))
+                if imported { try Data(#"["arc"]"#.utf8).write(to: AppPaths.file("imported-browsers.json")) }
+                let pinned = ExtensionStore().pinnedIDs(inProfile: "Default")
+                if imported {
+                    check(pinned == [install.id], "after importing from Arc, Arc's pinned extensions seed the toolbar")
+                } else {
+                    check(pinned.isEmpty, "without an import from Arc, Cra must not read Arc's pinned extensions (#757)")
+                    check(!FileManager.default.fileExists(atPath: AppPaths.file("pinned-extensions.json").path),
+                          "nothing is taken over, so nothing is saved")
+                }
+            }
+        }
+    }
+
+    /// Shared extensions (discussion #595): what Settings' Share, profile checkmarks and Remove do to each profile.
+    static func sharedExtensions() throws {
+        let work = "Profile W"
+        let workPath = { AppPaths.chromiumCache.appendingPathComponent(work, isDirectory: true).path }
+        /// A store install in Default only, Work loaded with nothing; Settings lists Default and Work.
+        func setUp(_ install: Install) throws -> ExtensionStore {
+            try FileManager.default.removeItem(at: install.copy)
+            try install.installStoreCopy()
+            try install.liveSettings(install.settings())
+            try install.liveSettings([:], profile: work)
+            CraCEFRuntime.managed = [:]
+            CraCEFRuntime.installs = []
+            ExtensionStore.profileFoldersSource = { ["Default", work] }
+            let store = ExtensionStore()
+            store.reload()
+            return store
+        }
+        func liveIDs(_ key: String) -> Set<String> {
+            let json = CraCEFRuntime.settingsByProfile[key] ?? "{}"
+            return Set(((try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]).keys)
+        }
+        func savedShares() -> SharedExtensions { ExtensionStore.loadShared() }
+
+        try run("shared-into-every-profile") { install in
+            let store = try setUp(install)
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "the store install is listed") }
+            check(e.fromWebStore && e.managedByChrome, "a store install is one Settings can share")
+            store.share(e)
+            check(savedShares().isShared(install.id), "the share is saved, so it survives a relaunch")
+            check(CraCEFRuntime.managed == ["Default": [install.id], work: [install.id]], "Chrome keeps it in both profiles")
+            check(CraCEFRuntime.installs.map(\.profile) == [workPath()], "only the profile that lacks it gets the store's install")
+            check(CraCEFRuntime.uninstallExtension(install.id, profilePath: nil) == false && liveIDs("Default").contains(install.id),
+                  "chrome://extensions can't remove it while it is shared")
+        }
+
+        try run("shared-taken-out-of-a-loaded-profile") { install in
+            let store = try setUp(install)
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "listed") }
+            store.share(e)
+            try install.liveSettings(install.settings(), profile: work)  // the store installed it there
+            store.setShared(e, profile: work, included: false)
+            check(!liveIDs(workPath()).contains(install.id), "taken out of Work: removed there")
+            check(liveIDs("Default").contains(install.id), "Default keeps it")
+            check(CraCEFRuntime.managed == ["Default": [install.id]], "Chrome lets go of it in Work only")
+            store.reload()
+            check(savedShares().removals.isEmpty, "the removal is done, so a later install in Work stays")
+        }
+
+        try run("shared-removal-waits-for-the-profile") { install in
+            let store = try setUp(install)
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "listed") }
+            store.share(e)
+            CraCEFRuntime.settingsByProfile[workPath()] = nil  // Work not loaded this session
+            let onDisk = AppPaths.chromiumCache.appendingPathComponent(work, isDirectory: true)
+            try install.writeSettings(install.settings(), in: onDisk)
+            store.setShared(e, profile: work, included: false)
+            check(savedShares().removals[work] == [install.id], "Work owes the removal until it loads")
+            try install.liveSettings(install.settings(), profile: work)  // a space on Work opens
+            store.reconcileShared(profile: work)
+            check(!liveIDs(workPath()).contains(install.id), "removed from Work once it loaded")
+            check(savedShares().removals.isEmpty, "and owed no more")
+        }
+
+        try run("shared-removed-everywhere") { install in
+            let store = try setUp(install)
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "listed") }
+            store.share(e)
+            try install.liveSettings(install.settings(), profile: work)
+            store.removeShared(e)
+            check(!liveIDs("Default").contains(install.id) && !liveIDs(workPath()).contains(install.id), "Remove takes it out of every profile")
+            check(!savedShares().isShared(install.id) && CraCEFRuntime.managed.isEmpty, "and stops sharing it")
+        }
+
+        // Discussion #595's follow-up: shared from the profile it was set up in, with the profiles picked.
+        try run("shared-from-a-home") { install in
+            let store = try setUp(install)
+            CraCEFRuntime.storage = [:]
+            CraCEFRuntime.switched = []
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "listed") }
+            store.share(e, from: "Default", with: [work])
+            check(savedShares().home(of: install.id) == "Default", "the share keeps where it was set up")
+            check(CraCEFRuntime.managed == ["Default": [install.id], work: [install.id]], "Chrome keeps it in both picked profiles")
+            check((CraCEFRuntime.storage[install.id]?["home"] as? String) == "Default"
+                  && (CraCEFRuntime.storage[install.id]?["profiles"] as? [String]) == ["Default", work],
+                  "the engine is told whose data both profiles use")
+            check(CraCEFRuntime.installs.map(\.profile) == [workPath()], "Work gets the store's install")
+            store.stopSharing(e)
+            check(savedShares().isShared(install.id), "Stop Sharing waits while two profiles use Default's data")
+            store.setSharedOn(e, false)
+            check(Set(CraCEFRuntime.switched.filter { !$0.on }.map(\.profile)) == ["Default", workPath()],
+                  "one switch: off in both loaded profiles")
+            store.setSharedOn(e, true)
+            try install.liveSettings(install.settings(), profile: work)  // the store installed it there
+            store.setShared(e, profile: work, included: false)
+            check(!liveIDs(workPath()).contains(install.id), "taken out of Work: removed there")
+            store.stopSharing(e)
+            check(!savedShares().isShared(install.id) && CraCEFRuntime.storage.isEmpty, "with Default alone it stops, on its own data")
+        }
+
+        try run("stop-sharing-keeps-installs") { install in
+            let store = try setUp(install)
+            guard let e = store.entries.first(where: { $0.extensionID == install.id }) else { return check(false, "listed") }
+            store.share(e)
+            store.stopSharing(e)
+            check(liveIDs("Default").contains(install.id), "Stop Sharing removes nothing")
+            check(CraCEFRuntime.managed.isEmpty, "chrome://extensions manages it again")
+            check(!FileManager.default.fileExists(atPath: AppPaths.file("shared-extensions.json").path), "nothing shared: no file")
+        }
+    }
+
     static func main() throws {
+        try sharedExtensions()
         try removedCopiesStayRemoved()
+        try pinnedComeOnlyFromAnImportedBrowser()
 
         try run("live-reload") { install in
             try install.installStoreCopy()
@@ -371,6 +556,7 @@ enum ExtensionStoreMigrationTests {
         }
 
         try unpackedCopiesStepAside()
+        try incognitoListsOnlyAllowed()
 
         print("ExtensionStoreMigrationTests: \(checks) checks, \(failures.count) failures")
         if !failures.isEmpty { exit(1) }

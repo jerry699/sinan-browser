@@ -1,13 +1,17 @@
 import AppKit
 
 /// A browser the import can read: Dia's list (Arc, Brave, Chrome, Edge,
-/// Firefox, Opera, Opera GX, Safari) plus Dia itself, Vivaldi, Chromium, Helium, Yab, Ardia and Zen.
+/// Firefox, Opera, Opera GX, Safari) plus Dia itself, Vivaldi, Chromium, Helium, Yab, Ardia, Phi, Crest and Zen.
 struct ImportSource: Identifiable, Hashable {
     enum Kind: Hashable {
         /// Arc and Dia: their own sidebar stores, and a Chromium profile for passwords and cookies.
         case arc, dia
         /// Yab and Ardia: Arc-style spaces in their own files, Chromium profiles for passwords and cookies.
         case yab, ardia
+        /// Phi: spaces in its own SwiftData store, Chromium profiles right in its folder.
+        case phi
+        /// Crest: spaces in its own SQLite session file, a Chromium profile for each space.
+        case crest
         case chromium, firefox
         /// Zen: Firefox underneath, with Arc-style spaces, Essentials and pinned tabs.
         case zen
@@ -24,6 +28,9 @@ struct ImportSource: Identifiable, Hashable {
     /// "<Name> Safe Storage" in the login Keychain, which encrypts passwords and cookies.
     var keychainService: String?
     var keychainAccount: String?
+    /// The browser's own folder under Application Support, when `dataDir` sits inside it (Arc's
+    /// "User Data", Yab's and Ardia's "Chromium"). The import list looks at this folder only (#757).
+    var ownFolder: URL? = nil
 
     var rawValue: String { name }
 
@@ -39,10 +46,10 @@ struct ImportSource: Identifiable, Hashable {
 
     static let arc = ImportSource(id: "arc", name: "Arc", bundleID: "company.thebrowser.Browser", kind: .arc,
                                   dataDir: ArcImporter.userData,
-                                  keychainService: "Arc Safe Storage", keychainAccount: "Arc")
+                                  keychainService: "Arc Safe Storage", keychainAccount: "Arc", ownFolder: ArcImporter.supportDir)
     static let dia = ImportSource(id: "dia", name: "Dia", bundleID: "company.thebrowser.dia", kind: .dia,
                                   dataDir: DiaImporter.userData,
-                                  keychainService: "Dia Safe Storage", keychainAccount: "Dia")
+                                  keychainService: "Dia Safe Storage", keychainAccount: "Dia", ownFolder: DiaImporter.supportDir)
 
     static let allCases: [ImportSource] = [
         arc, dia,
@@ -56,9 +63,13 @@ struct ImportSource: Identifiable, Hashable {
         // Helium renames its Keychain item instead of using "<Name> Safe Storage".
         chromium("helium", "Helium", "net.imput.helium", "net.imput.helium", account: "Helium", service: "Helium Storage Key"),
         ImportSource(id: "yab", name: "Yab", bundleID: "dev.serafim.fast", kind: .yab, dataDir: YabImporter.userData,
-                     keychainService: "Yab Safe Storage", keychainAccount: "Yab"),
+                     keychainService: "Yab Safe Storage", keychainAccount: "Yab", ownFolder: YabImporter.supportDir),
         ImportSource(id: "ardia", name: "Ardia", bundleID: "com.ardia.browser", kind: .ardia, dataDir: ArdiaImporter.userData,
-                     keychainService: "Ardia Safe Storage", keychainAccount: "Ardia"),
+                     keychainService: "Ardia Safe Storage", keychainAccount: "Ardia", ownFolder: ArdiaImporter.supportDir),
+        ImportSource(id: "phi", name: "Phi", bundleID: "com.phibrowser.Mac", kind: .phi, dataDir: PhiImporter.userData,
+                     keychainService: "Phi Safe Storage", keychainAccount: "Phi"),
+        ImportSource(id: "crest", name: "Crest", bundleID: "com.pauldavis.crest", kind: .crest, dataDir: CrestImporter.userData,
+                     keychainService: "Crest Safe Storage", keychainAccount: "com.pauldavis.crest", ownFolder: CrestImporter.supportDir),
         ImportSource(id: "firefox", name: "Firefox", bundleID: "org.mozilla.firefox", kind: .firefox,
                      dataDir: support.appendingPathComponent("Firefox", isDirectory: true)),
         ImportSource(id: "zen", name: "Zen", bundleID: "app.zen-browser.zen", kind: .zen,
@@ -67,14 +78,24 @@ struct ImportSource: Identifiable, Hashable {
                      dataDir: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Safari", isDirectory: true)),
     ]
 
-    /// Has data to bring over. The import reads only the profile on disk, so a browser
-    /// someone already deleted is still offered while its data is there; Safari is always there.
-    /// A folder macOS won't let Cra read is offered too, asking for Full Disk Access, as Ardia
-    /// does: current macOS keeps Chrome's and Brave's data from other apps, and hiding the
-    /// browser left a Chrome user with only Opera to pick (X DM, 15 Nov).
-    var isAvailable: Bool { hasProfile || needsFullDiskAccess }
+    /// Offered in the import list: its own folder is there. A browser someone already deleted is
+    /// still offered while its folder is; Safari always is. Whether the folder holds a profile, and
+    /// whether macOS lets Cra read it (Full Disk Access), shows once the browser is picked: reading
+    /// inside it before that made macOS show "Data Access Blocked … tried to access your data from
+    /// other apps" on Cra's first launch (#757).
+    var isAvailable: Bool {
+        !OtherBrowserData.offered([otherBrowser]) { FileManager.default.fileExists(atPath: $0) }.isEmpty
+    }
 
-    /// The data folder is there but macOS refuses to list it.
+    /// This browser as OtherBrowserData sees it: its own folder and its native messaging manifests.
+    var otherBrowser: OtherBrowserData.Browser {
+        let manifests = [.chromium, .arc, .dia, .phi].contains(kind) ? dataDir.appendingPathComponent("NativeMessagingHosts", isDirectory: true).path : nil
+        return OtherBrowserData.Browser(id: id, folder: (ownFolder ?? dataDir).path, nativeMessagingHosts: manifests,
+                                        alwaysOffered: kind == .safari)
+    }
+
+    /// The picked browser's folder is there but macOS refuses to list it. Asked only about the
+    /// browser the person picked: asking reads inside its folder (#757).
     var needsFullDiskAccess: Bool {
         kind != .safari && Self.isAccessDenied(dataDir)
     }
@@ -90,18 +111,6 @@ struct ImportSource: Identifiable, Hashable {
         }
     }
 
-    private var hasProfile: Bool {
-        switch kind {
-        case .arc: return ArcImporter.isAvailable
-        case .dia: return DiaImporter.isAvailable
-        case .yab: return YabImporter.isAvailable
-        case .ardia: return ArdiaImporter.isAvailable
-        case .safari: return true
-        case .chromium: return !ChromiumImporter.profiles(userData: dataDir).isEmpty
-        case .firefox, .zen: return FirefoxImporter.defaultProfile(root: dataDir) != nil
-        }
-    }
-
     var isInstalled: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
 
     /// Safari's data arrives as an exported file instead of a plan read from disk.
@@ -109,10 +118,12 @@ struct ImportSource: Identifiable, Hashable {
 
     func plan() throws -> ImportPlan {
         switch kind {
-        case .arc: return try ArcImporter.plan()
+        case .arc: return try ArcImporter.plan(favicons: dataDir)
         case .dia: return try DiaImporter.plan()
         case .yab: return try YabImporter.plan()
         case .ardia: return try ArdiaImporter.plan()
+        case .phi: return try PhiImporter.plan()
+        case .crest: return try CrestImporter.plan()
         case .chromium: return try ChromiumImporter.plan(browser: name, userData: dataDir)
         case .firefox: return try FirefoxImporter.plan(browser: name, root: dataDir)
         case .zen: return try ZenImporter.plan(root: dataDir)
@@ -124,36 +135,42 @@ struct ImportSource: Identifiable, Hashable {
     var credentialProfiles: [ChromiumProfile] {
         guard keychainService != nil else { return [] }
         let profiles = ChromiumImporter.profiles(userData: dataDir)
-        // Yab and Ardia name their Chromium folders by an id, shown here by the space's name;
-        // Yab never uses Default.
+        // Yab, Ardia and Crest name their Chromium folders by an id, shown here by the space's name;
+        // Yab never uses Default. Crest browses each space in its own "Crest-<id>": its Default and
+        // any folder no space uses hold none of the person's sign-ins.
         let names: [String: String]
         switch kind {
         case .yab: names = YabImporter.profileNames(supportDir: dataDir.deletingLastPathComponent())
         case .ardia: names = ArdiaImporter.profileNames()
+        case .crest: names = CrestImporter.profileNames()
         default: return profiles
         }
-        return profiles.filter { kind != .yab || $0.id != "Default" }.map { ChromiumProfile(id: $0.id, name: names[$0.id] ?? $0.name, dir: $0.dir) }
+        let unused: (ChromiumProfile) -> Bool = { p in
+            switch kind {
+            case .yab: return p.id == "Default"
+            case .crest: return !names.isEmpty && names[p.id] == nil
+            default: return false
+            }
+        }
+        return profiles.filter { !unused($0) }.map { ChromiumProfile(id: $0.id, name: names[$0.id] ?? $0.name, dir: $0.dir) }
     }
 
     func topSites(limit: Int) -> [TopSite] {
         switch kind {
-        case .arc, .dia, .yab, .ardia, .chromium: return ChromiumImporter.topSites(userData: dataDir, limit: limit)
+        case .arc, .dia, .yab, .ardia, .phi, .crest, .chromium: return ChromiumImporter.topSites(userData: dataDir, limit: limit)
         case .firefox, .zen: return FirefoxImporter.topSites(root: dataDir, limit: limit)
         case .safari: return []
         }
     }
 
+    /// Each host's icon, from the same stores the import reads.
     func favicons(hosts: [String]) -> [String: NSImage] {
-        switch kind {
-        case .arc, .dia, .yab, .ardia, .chromium: return ChromiumImporter.favicons(userData: dataDir, hosts: hosts)
-        case .firefox, .zen: return FirefoxImporter.favicons(root: dataDir, hosts: hosts)
-        case .safari: return [:]
-        }
+        kind.iconStores(dataDir: dataDir).icons(hosts: hosts).compactMapValues { FaviconCache.png($0).flatMap(NSImage.init(data:)) }
     }
 
     func extensions() -> [ImportableExtension] {
         switch kind {
-        case .arc, .dia, .yab, .ardia, .chromium: return ExtensionImporter.extensions(inUserData: dataDir)
+        case .arc, .dia, .yab, .ardia, .phi, .crest, .chromium: return ExtensionImporter.extensions(inUserData: dataDir)
         case .firefox, .zen, .safari: return []
         }
     }
@@ -167,5 +184,20 @@ struct ImportSource: Identifiable, Hashable {
         if let url = Bundle.main.url(forResource: id, withExtension: "png", subdirectory: "browsers"),
            let image = NSImage(contentsOf: url) { return image }
         return NSImage(systemSymbolName: "globe", accessibilityDescription: name) ?? NSImage()
+    }
+}
+
+extension ImportSource.Kind {
+    /// Where this browser keeps tab icons under `dataDir` (its ImportSource's): Yab's own icons/ folder,
+    /// then each browser's favicon databases. Arc's per-item caches are read with its sidebar, by item id.
+    func iconStores(dataDir: URL) -> ImportFavicons.Stores {
+        switch self {
+        case .yab:
+            return ImportFavicons.Stores(own: YabImporter.ownIcons(supportDir: dataDir.deletingLastPathComponent()),
+                                         databases: { ChromiumImporter.favicons(userData: dataDir, hosts: $0) })
+        case .arc, .dia, .ardia, .phi, .crest, .chromium: return ImportFavicons.Stores(databases: { ChromiumImporter.favicons(userData: dataDir, hosts: $0) })
+        case .firefox, .zen: return ImportFavicons.Stores(databases: { FirefoxImporter.favicons(root: dataDir, hosts: $0) })
+        case .safari: return ImportFavicons.Stores()
+        }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Compression
 import CryptoKit
 import Foundation
 import Observation
@@ -21,19 +22,56 @@ enum StoreTests {
         setenv("CRA_DIA_DIR", URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Dia").path, 1)
         setenv("CRA_ARDIA_DIR", URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Ardia").path, 1)
         setenv("CRA_YAB_DIR", URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Yab").path, 1)
+        setenv("CRA_PHI_DIR", URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Phi").path, 1)
+        setenv("CRA_CREST_DIR", URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Crest").path, 1)
 
         try arcImport()
+        try arcKeepsAnyAddress()
+        try importedTabsKeepTheirOwnIcons()
+        try arcIconsBeyondTheSidebarCache()
         try diaImport()
+        try diaIconsFromItsDatabase()
         try ardiaImport()
+        try phiImport()
+        try crestImport()
+        try arcImportReport()
+        try arcSpacesOnOneProfileCountTheirFavoritesOnce()
+        try arcArchiveBeyondItsLimitIsListed()
+        try arcTabThatIsNoLiveItemIsListed()
+        try diaImportReport()
+        try ardiaImportReport()
+        try yabImportReport()
+        try yabFavoritesCountAsYabHoldsThem()
+        try arcCraAddressesAreListed()
+        diaSidebarCraAddressesAreListed()
+        try diaLegacyLeftOutAreListed()
+        chromiumImportReport()
+        firefoxImportReport()
+        zenImportReport()
+        try safariImportReport()
         try yabImport()
+        try yabOwnIcons()
+        pinPickerReadsTheImportsIconStores()
+        iconFilesAreDecodedSmall()
+        faviconDatabaseLookup()
+        try chromiumAndFirefoxPlansBringIcons()
+        plansReadOffTheMainThread()
+        planLoaderReadsOffMainAndKeepsTheLastPick()
+        try yabKeepsAnyAddress()
         chromiumProfile()
+        try firefoxImport()
+        try zenImport()
+        try safariImport()
         deletedBrowserStillImports()
         protectedBrowserAsksForFullDiskAccess()
+        importListReadsNothingInsideABrowsersFolder()
         signedInChromeProfileImports()
         chromiumManifestV2Import()
         zenFaviconSize()
         autoArchive()
+        autoArchiveCounts()
         longAutoArchive()
+        profileAutoArchive()
         tabSleepCadence()
         tabRestTimes()
         integrity()
@@ -43,6 +81,8 @@ enum StoreTests {
         liveRepositoryMenus()
         liveFolderExpiryKeepsNavigatedPages()
         mergedPullRequestsLeaveAnUpdatedFolder()
+        closedPullRequestsLeaveFromTheirOwnPages()
+        closedPullRequestsStayOutAcrossRefreshes()
         gitLabHiddenItems()
         gitLabFolderExpiryAndDeletion()
         gitLabMultipleServers()
@@ -52,6 +92,7 @@ enum StoreTests {
         gitLabProfileChangeKeepsNavigatedPages()
         stampsUseTheClock()
         visitsRememberTheirProfile()
+        historyFromBeforeProfilesTakesThemFromChromium()
         persistenceFaults()
         incognitoStaysOffDisk()
         chromePagesLeaveIncognito()
@@ -68,6 +109,8 @@ enum StoreTests {
         closeSuccessor()
         favoritesEmptyState()
         sharedFavorites()
+        selectSharedFavoriteInSpace()
+        removedFavoriteComesBackOnUndo()
         profileTabsSpaceBySpace()
         newDocumentApps()
         themePreview()
@@ -76,6 +119,7 @@ enum StoreTests {
         try arcLiveFolderImportsLive()
         try arcSpaceWithoutAnIconImportsAsADot()
         try arcSpaceIconTabGlyphImports()
+        try arcStubContainerBeforeTheSpaces()
         littleWindowProfile()
         tidyTabs()
         tidyExistingGroupIdentity()
@@ -90,6 +134,8 @@ enum StoreTests {
         windowsShareTheSidebar()
         clearTodayArchivesInOnePass()
         settingsSync()
+        syncKeepsASplitMadeWhileTheOtherMacLooked()
+        thinSplitsGoOnLoad()
         syncLeavesBlankWindowsOnTheirMac()
         blankWindows()
         blankWindowWithoutItsWindow()
@@ -113,6 +159,7 @@ enum StoreTests {
         recentCardsKeepSplitsWhole()
         incognitoSpaceKeepsItsContext()
         newWindowsTakeTheLastSidebarChoice()
+        rerouteTabKeepsOriginSelection()
         print("Store: \(checks) checks passed")
     }
 
@@ -130,7 +177,7 @@ enum StoreTests {
         expect(home.today.count == 3, "Today tabs come over")
         expect(work.pinned.isEmpty && work.today.count == 1 && work.today[0].isFolder && work.today[0].children.count == 2,
                "a split view is flattened into a folder of its tabs")
-        expect(plan.archive.map(\.pageTitle) == ["Old two", "Old one"], "archived tabs are newest first")
+        expect(plan.archive.map(\.pageTitle) == ["Old two", "Old one"], "archived tabs are newest first, about:blank and blob: ones left out")
         expect(plan.archive.map(\.reason) == [.manual, .auto] && plan.archive.map(\.spaceTitle) == ["Work", "Home"],
                "archive entries keep their reason and space")
         expect(plan.settings.sidebarWidth == 280, "the sidebar width comes from StorableWindows.json")
@@ -143,6 +190,133 @@ enum StoreTests {
         expect(composition.store.integrityProblems().isEmpty, "the imported sidebar is sound")
         arcLinkRoutes(store: composition.store)
         arcProfiles(plan: plan, store: composition.store)
+        arcSiteProfiles(plan: plan, store: composition.store)
+    }
+
+    // promise: #742
+    /// Arc import keeps a tab whatever its address, as it always has, and leaves out what every
+    /// importer leaves out: a blank or new tab page and a blob:.
+    private static func arcKeepsAnyAddress() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        var items = containers[main]["items"] as! [Any]
+        let tabs = ["file:///Users/me/notes.html", "javascript:void(document.title)", "chrome://extensions/",
+                    "about:blank", "chrome://newtab/", "blob:https://example.com/5f1c"]
+        let ids = tabs.indices.map { "work-t\($0)" }
+        for (id, url) in zip(ids, tabs) {
+            items += [id, ["id": id, "parentID": "work-today", "childrenIds": [String](), "isUnread": false, "originatingDevice": "FIXTURE",
+                           "createdAt": 800000000.0, "data": ["tab": ["savedURL": url, "savedTitle": id]]] as [String: Any]]
+        }
+        let today = items.firstIndex { ($0 as? String) == "work-today" }! + 1
+        var container = items[today] as! [String: Any]
+        container["childrenIds"] = (container["childrenIds"] as! [String]) + ids
+        items[today] = container
+        containers[main]["items"] = items
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let plan = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root))
+        expect(plan.spaces[1].today.compactMap(\.url) == Array(tabs.prefix(3)),
+               "Arc's Today tabs come over whatever their address; about:blank, a new tab page and blob: left out")
+    }
+
+    // promise: #673
+    /// Arc keeps one favicon per sidebar item, and the importer has each one's file. They were all
+    /// copied under the host alone, so every imported Google Doc, Sheet and Slide showed one icon,
+    /// and the icon of whichever page on the host loaded last (#673). Each imported tab keeps its own.
+    @MainActor
+    private static func importedTabsKeepTheirOwnIcons() throws {
+        func saved(_ key: String?) -> Data? {
+            key.flatMap { try? Data(contentsOf: AppPaths.favicons.appendingPathComponent(FaviconCache.fileName($0))) }
+        }
+        // From Arc's own files: the fixture's pinned folder has two tabs on example.com, with an icon
+        // each in SidebarItemsFaviconCache.
+        let arc = AppComposition(clock: ManualScheduler()).store
+        let home = arc.apply(try ArcImporter.plan(), includeArchive: false, includeSettings: false).spaceIDs[0]
+        let fromArc = (arc.space(home)?.pinnedContainerID).map(arc.tabs(under:)) ?? []
+        let news = fromArc.first { $0.tab?.url == "https://example.com/news" }, blog = fromArc.first { $0.tab?.url == "https://example.com/blog" }
+        let cached = { (item: String) in ArcImporter.faviconFile(forItemID: item).flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) } }
+        expect(cached("home-p1") != nil && cached("home-p1") != cached("home-p2"), "the fixture has a different icon for each of the two tabs")
+        expect(news?.tab?.faviconKey == news.map { FaviconKey.key(site: "example.com", tabID: $0.id) }
+               && saved(news?.tab?.faviconKey) == cached("home-p1") && saved(blog?.tab?.faviconKey) == cached("home-p2"),
+               "each tab imported from Arc keeps the icon Arc cached for it")
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-import-icons-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func icon(_ name: String, _ color: NSColor) -> (path: String, data: Data) {
+            let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in color.setFill(); r.fill(); return true }
+            let data = ZenImporter.faviconPNG(image) ?? Data()
+            let file = dir.appendingPathComponent(name)
+            try? data.write(to: file)
+            return (file.path, data)
+        }
+        let doc = icon("doc", .blue), sheet = icon("sheet", .green), other = icon("other", .red)
+        let docURL = "https://docs.example.com/document/d/1/edit", sheetURL = "https://docs.example.com/spreadsheets/d/2/edit"
+        var plan = ImportPlan(source: "Arc")
+        plan.spaces = [ImportedSpace(title: "Icons", emoji: "📄", pinned: [
+            ImportedItem(customTitle: "Files", pageTitle: "Files", isFolder: true, children: [
+                ImportedItem(pageTitle: "Doc", url: docURL, faviconPath: doc.path),
+                ImportedItem(pageTitle: "Sheet", url: sheetURL, faviconPath: sheet.path),
+            ]),
+            ImportedItem(pageTitle: "No icon", url: "https://docs.example.com/presentation/d/3/edit"),
+            ImportedItem(pageTitle: "Elsewhere", url: "https://other.example.com/", faviconPath: other.path),
+        ])]
+        let store = AppComposition(clock: ManualScheduler()).store
+        let space = store.apply(plan, includeArchive: false, includeSettings: false).spaceIDs[0]
+        guard let pinned = store.space(space)?.pinnedContainerID else { return expect(false, "the imported space is there") }
+        let tabs = store.tabs(under: pinned)
+        func tab(_ url: String) -> SidebarItem? { tabs.first { $0.tab?.url == url } }
+        guard let d = tab(docURL), let s = tab(sheetURL) else { return expect(false, "both tabs on the host are imported") }
+        expect(d.tab?.faviconKey == FaviconKey.key(site: "docs.example.com", tabID: d.id)
+               && s.tab?.faviconKey == FaviconKey.key(site: "docs.example.com", tabID: s.id),
+               "an imported tab's icon goes under the tab's own key, not its host's")
+        expect(saved(d.tab?.faviconKey) == doc.data && saved(s.tab?.faviconKey) == sheet.data,
+               "two imported tabs on one host each keep the icon Arc had for them")
+        // Another page on the host loads: its icon becomes the host's (BrowserManager's didLoadFavicon).
+        let cache = FaviconCache()
+        cache.store(NSImage(contentsOfFile: other.path) ?? NSImage(), forKey: "docs.example.com", persist: false)
+        func pixels(_ image: NSImage?) -> Data? { image.flatMap { ZenImporter.faviconPNG($0) } }
+        expect(pixels(cache.image(forKey: d.tab?.faviconKey)) == pixels(NSImage(contentsOfFile: doc.path))
+               && pixels(cache.image(forKey: s.tab?.faviconKey)) == pixels(NSImage(contentsOfFile: sheet.path)),
+               "and neither changes when another page on the host loads its icon")
+        expect(saved("docs.example.com") == doc.data, "the host still has an icon, for suggestions and tabs with none")
+        expect(tab("https://docs.example.com/presentation/d/3/edit")?.tab?.faviconKey == "docs.example.com",
+               "a tab imported with no icon shows its host's until its page loads")
+        expect(saved(tab("https://other.example.com/")?.tab?.faviconKey) == other.data, "a tab alone on its host keeps its icon too")
+        expect(store.integrityProblems().isEmpty, "the imported sidebar is sound")
+    }
+
+    /// Arc keeps icons beyond SidebarItemsFaviconCache: an archived tab's in ArchiveItemsFaviconCache
+    /// (md5 of its id, Tests/Fixtures/Arc), and every page it loaded in its profiles' Favicons databases.
+    @MainActor
+    private static func arcIconsBeyondTheSidebarCache() throws {
+        let cached = try Data(contentsOf: ArcImporter.supportDir.appendingPathComponent("ArchiveItemsFaviconCache/8a8bb7cd343aa2ad99b7d762030857a2"))
+        let plan = try ArcImporter.plan()
+        let old1 = plan.archive.first { $0.url == "https://example.com/old/1" }, old2 = plan.archive.first { $0.url == "https://example.com/old/2" }
+        expect(old1?.faviconPath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) } == cached, "an archived tab comes with the icon Arc cached for it")
+        expect(old2 != nil && old2?.faviconPath == nil, "an archived tab Arc cached no icon for comes without one")
+
+        let store = AppComposition(clock: ManualScheduler()).store
+        store.apply(plan, includeArchive: true, includeSettings: false)
+        let archived = store.archive.first { $0.item.tab?.url == "https://example.com/old/1" }?.item
+        expect(archived?.tab?.faviconKey == archived.map { FaviconKey.key(site: "example.com", tabID: $0.id) },
+               "an archived tab's icon goes under its own key, the one the Library's row reads")
+        expect(savedFavicon(archived?.tab?.faviconKey) == cached, "and it is the icon Arc had for it")
+
+        // Arc's Favicons database, for the tabs Arc's sidebar cache has no file for.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-arc-icons-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let userData = root.appendingPathComponent("User Data", isDirectory: true)
+        makeChromiumUserData(userData, bookmarks: [], icons: [("http://example.com/", 20)])
+        let withDatabase = try ArcImporter.plan(favicons: userData)
+        func all(_ items: [ImportedItem]) -> [ImportedItem] { items.flatMap { $0.isFolder ? all($0.children) : [$0] } }
+        let home = withDatabase.spaces.first { $0.title == "Home" }.map { all($0.pinned) + all($0.today) } ?? []
+        let uncached = home.first { $0.url == "https://example.com/today/1" }, news = home.first { $0.url == "https://example.com/news" }
+        expect(pixelsWide(uncached?.faviconPath) == 20, "a tab Arc cached no icon for takes its host's from Arc's Favicons database")
+        expect(news?.faviconPath != nil && news?.faviconPath == ArcImporter.faviconFile(forItemID: "home-p1"), "a tab Arc cached an icon for keeps that one")
     }
 
     // promise: #258
@@ -158,6 +332,24 @@ enum StoreTests {
         expect(to("work.example.com") == .littleWindow(space: work), "a Little Arc in Work opens a Little Window in Work")
         expect(to("example.com/standup") == .space(home) && to("meet.google.com") == .mostRecentSpace, "space routes keep their space")
         expect(store.settings.defaultLinkDestination == .littleWindowInUse, "Little Arc as the default stays in the space in use")
+    }
+
+    // promise: #768
+    /// Arc's domainToProfilePreferences: the profile picked for each site in a Little Arc comes over on the
+    /// Cra profile its folder became.
+    @MainActor
+    private static func arcSiteProfiles(plan: ImportPlan, store: SidebarStore) {
+        let work = store.orderedSpaces.first { $0.title == "Work" }!, home = store.orderedSpaces.first { $0.title == "Home" }!
+        let client = store.profiles.first { $0.name == "Client" }
+        let sites = store.prefs.siteProfiles
+        expect(plan.settings.siteProfiles.map { "\($0.site) \($0.folder)" } == ["example.com Default", "other.example.com Profile 9", "work.example.com Profile 2"],
+               "the profile picked for each site in a Little Arc comes from the fixture's preferences, not this Mac's Arc")
+        expect(sites.profile(for: "https://work.example.com/a") == RememberedProfile(id: client?.id)
+               && sites.profile(for: "https://www.example.com/") == RememberedProfile(id: nil),
+               "each site keeps its Little Arc profile, on the Cra profile its folder became")
+        expect(sites.profile(for: "https://other.example.com/") == nil, "a site on a profile no imported space is on follows the window used last")
+        expect(sites.space(for: "https://work.example.com/", lastUsed: home.id, in: store.orderedSpaces) == work.id,
+               "so a Little Window on it opens in Work")
     }
 
     // promise: #131
@@ -243,6 +435,26 @@ enum StoreTests {
         expect(mode(target) == 0o600 && mode(target.deletingLastPathComponent()) == 0o700, "owner only, like Chromium's own")
     }
 
+    /// Dia's plan brings each tab's icon from its profiles' Favicons databases, here a copy of the
+    /// fixture's sidebar beside a Favicons made for the test.
+    @MainActor
+    private static func diaIconsFromItsDatabase() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-dia-icons-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let userData = root.appendingPathComponent("User Data", isDirectory: true)
+        makeChromiumUserData(userData, bookmarks: [], icons: [("https://example.com/", 21)])
+        let fixture = DiaImporter.userData.appendingPathComponent("Profile 1", isDirectory: true)
+        let profile = userData.appendingPathComponent("Profile 1", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        for name in ["tabs.db", "tabs.db-wal"] {
+            try FileManager.default.copyItem(at: fixture.appendingPathComponent(name), to: profile.appendingPathComponent(name))
+        }
+        let plan = try DiaImporter.plan(secret: "cra-test-secret", userData: userData)
+        let home = plan.spaces.first { $0.title == "Home" }
+        expect(home?.favorites.first?.url == "https://example.com/mail" && pixelsWide(home?.favorites.first?.faviconPath) == 21,
+               "a Dia tab comes with its host's icon from Dia's Favicons database")
+    }
+
     /// Dia 1.55's encrypted sidebar (Tests/Fixtures/Dia, rebuilt by its make-fixture.py with the
     /// Safe Storage secret "cra-test-secret").
     @MainActor
@@ -259,14 +471,25 @@ enum StoreTests {
         let reading = home.pinned[1]
         expect(reading.isFolder && reading.children.count == 2 && reading.children[1].isFolder
                && reading.children[1].children.compactMap(\.url) == ["https://example.com/read/deep"], "folders nest")
-        expect(home.today.compactMap(\.url) == ["https://example.com/open", "https://example.com/left", "https://example.com/right"],
-               "open tabs come over, a split as its tabs, a new tab page left out")
+        expect(home.today.compactMap(\.url) == ["https://example.com/open", "https://example.com/left", "https://example.com/right",
+                                                "file:///Users/me/notes.html", "javascript:void(document.title)", "chrome://settings/"],
+               "open tabs come over whatever their address, a split as its tabs; a new tab page, about:blank and blob: left out")
         expect(work.pinned.count == 1 && work.pinned[0].customTitle == "Tools" && work.pinned[0].children.compactMap(\.url) == ["https://example.com/ci"],
                "edits still in the -wal come over")
 
         expect((try? DiaImporter.plan(secret: "wrong")) == nil,
                "a secret that opens no sidebar database fails instead of importing Dia's stale older files")
         expect((try? DiaImporter.plan())?.spaces.contains { $0.title == "Home" } == false, "without the secret nothing comes from the database")
+        let legacy = try DiaImporter.plan()
+        expect(legacy.favorites.compactMap(\.url) == ["https://example.com/mail", "chrome://settings/"],
+               "Dia's older files: favorites whatever their address, about:blank and a new tab page left out")
+        expect(legacy.spaces.first { $0.title == "Dia" }?.today.compactMap(\.url)
+               == ["https://example.com/open", "file:///Users/me/notes.html", "javascript:void(document.title)", "chrome://settings/"],
+               "Dia's older open tabs whatever their address; about:blank, a new tab page and blob: left out")
+        expect(legacy.spaces.first { $0.title == "Reading" }?.pinned.compactMap(\.url)
+               == ["https://example.com/read", "file:///Users/me/notes.html", "javascript:void(document.title)"],
+               "a bookmarks bar folder keeps its file: and javascript: bookmarks, about:blank and blob: left out")
+        expect(!legacy.spaces.contains { $0.title == "Blank" }, "a folder of only blank bookmarks is left out")
 
         let clock = ManualScheduler()
         let composition = AppComposition(clock: clock)
@@ -274,9 +497,476 @@ enum StoreTests {
         expect(result.spaces == 2 && result.folders == 3, "applying adds both spaces and their folders")
         let homeSpace = composition.store.orderedSpaces.first { $0.title == "Home" }
         let open = homeSpace.map { composition.store.tabs(under: $0.todayContainerID) } ?? []
-        expect(open.count == 3 && open.allSatisfy { $0.tab?.timeLastActiveAt == clock.now },
+        expect(open.count == 6 && open.allSatisfy { $0.tab?.timeLastActiveAt == clock.now },
                "open tabs count as active at the import, so auto-archive doesn't take weeks-old Dia tabs at once")
         expect(composition.store.integrityProblems().isEmpty, "the imported sidebar is sound")
+    }
+
+    // MARK: Import reports
+
+    /// After an import the tabs, favorites and archive tiles each read "N of M" of their own kind,
+    /// on the base each showed before the import, so the numbers match. Arc's profile leaves
+    /// nothing out, and a second import of it counts what Cra already has as copied, not as skipped.
+    @MainActor
+    private static func arcImportReport() throws {
+        let plan = try ArcImporter.plan()
+        let store = AppComposition(clock: ManualScheduler()).store
+        let first = store.apply(plan, includeArchive: true, includeSettings: false)
+        let pinnedAndToday = plan.spaces.reduce(0) { $0 + $1.itemCount }
+        expect(first.report[.tabs] == ImportReport(.tabs, copied: pinnedAndToday) && first.report[.tabs].summary == "\(pinnedAndToday) of \(pinnedAndToday) tabs",
+               "the tabs tile counts the pinned and Today tabs, as before the import")
+        let download = ImportSkip(title: "Download", url: "blob:https://example.com/5f1c", reason: .onlyInItsBrowser, kind: .archive)
+        expect(first.report[.archive] == ImportReport(.archive, copied: 2, skipped: [download]) && first.report[.archive].summary == "2 of 3 tabs",
+               "the archive tile counts the archive, its blob: tab listed")
+        // Work's profile has no favorites of its own, so it shows Default's: Arc holds two favorites.
+        expect(plan.spaces.allSatisfy { $0.favorites.count == 2 } && first.report[.favorites] == ImportReport(.favorites, copied: 2),
+               "a space borrowing another profile's favorites counts them in that list, once, as Arc holds them")
+        let again = store.apply(plan, includeArchive: true, includeSettings: false)
+        expect(again.archived == 0, "the second import finds the archive already in Cra")
+        expect(again.report == first.report, "and counts it as copied: the same N of N, nothing listed")
+        for id in first.spaceIDs + again.spaceIDs { store.deleteSpace(id) }
+
+        // Favorites that belong to no space go to the focused one, where the second import finds them.
+        var favorites = ImportPlan(source: "Arc")
+        favorites.favorites = plan.spaces[0].favorites
+        _ = store.apply(favorites, includeArchive: false, includeSettings: false)
+        let twice = store.apply(favorites, includeArchive: false, includeSettings: false)
+        expect(twice.tabs == 0 && twice.report[.favorites] == ImportReport(.favorites, copied: favorites.favorites.count),
+               "favorites Cra already has count as copied, not as skipped")
+    }
+
+    /// Two Arc spaces on one profile share its favorites: the favorites tile counts the profile's
+    /// two, not two per space.
+    @MainActor
+    private static func arcSpacesOnOneProfileCountTheirFavoritesOnce() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        var spaces = containers[main]["spaces"] as! [Any]
+        let work = spaces.firstIndex { ($0 as? String) == "work" }! + 1
+        var space = spaces[work] as! [String: Any]
+        space["profile"] = ["default": true]
+        spaces[work] = space
+        containers[main]["spaces"] = spaces
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let plan = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root))
+        expect(plan.spaces.map(\.profile) == [nil, nil] && plan.spaces.allSatisfy { $0.favorites.compactMap(\.url) == ["https://example.com/mail", "https://example.com/calendar"] },
+               "both spaces are on Default and carry its favorites")
+        expect(plan.report(includeArchive: false)[.favorites].summary == "2 of 2 favorites", "the tile reads the profile's two")
+        let store = AppComposition(clock: ManualScheduler()).store
+        let result = store.apply(plan, includeArchive: false, includeSettings: false)
+        expect(result.report[.favorites] == ImportReport(.favorites, copied: 2), "and so does the import")
+        for id in result.spaceIDs { store.deleteSpace(id) }
+    }
+
+    /// Cra takes Arc's newest 1500 archived tabs; the older ones are listed, and only when the
+    /// archive comes over.
+    @MainActor
+    private static func arcArchiveBeyondItsLimitIsListed() throws {
+        let sidebar = try Data(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json"))
+        let entries: [[String: Any]] = (0...1500).map { i in
+            ["sidebarItem": ["id": "old-\(i)", "data": ["tab": ["savedURL": "https://example.com/old/\(i)", "savedTitle": "Old \(i)"]]],
+             "reason": "auto", "archivedAt": 700000000.0 + Double(i)]
+        }
+        let plan = try ArcImporter.plan(sidebar: sidebar, archive: JSONSerialization.data(withJSONObject: ["items": entries]))
+        expect(plan.archive.count == 1500 && plan.archiveSkipped == [ImportSkip(title: "Old 0", url: "https://example.com/old/0", reason: .olderArchive(limit: 1500), kind: .archive)],
+               "the oldest archived tab past 1500 is listed as left out")
+        var archiveOnly = ImportPlan(source: "Arc")
+        archiveOnly.archiveSkipped = plan.archiveSkipped
+        let store = AppComposition(clock: ManualScheduler()).store
+        expect(!store.apply(archiveOnly, includeArchive: false, includeSettings: false).report[.archive].isShown,
+               "without the archive its skipped tabs aren't listed")
+        let archiveKept = store.apply(archiveOnly, includeArchive: true, includeSettings: false).report
+        expect(archiveKept[.archive].isShown && archiveKept[.archive].skipped == plan.archiveSkipped && archiveKept[.archive].skipped.first?.kind == .archive,
+               "with the archive and no space picked, they are on the archive tile")
+    }
+
+    /// A tab someone put in Arc's GitHub live folder by hand stands for no pull request: the live
+    /// folder refills itself and leaves it out, and the list says so.
+    @MainActor
+    private static func arcTabThatIsNoLiveItemIsListed() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        var items = containers[main]["items"] as! [Any]
+        func item(_ id: String, children: [String] = [], data: [String: Any]) -> [Any] {
+            [id, ["id": id, "childrenIds": children, "createdAt": 800000000.0, "data": data] as [String: Any]]
+        }
+        let pr = "https://github.com/example/app/pull/1"
+        items += item("work-prs", children: ["work-pr1", "work-notes", "work-group"],
+                      data: ["list": ["automaticLiveFolderData": ["dataSource": ["github": [String: Any]()]]]])
+        items += item("work-pr1", data: ["tab": ["savedURL": pr, "savedTitle": "Pull 1", "liveItemID": ["url": ["_0": pr]]]])
+        items += item("work-notes", data: ["tab": ["savedURL": "https://example.com/notes", "savedTitle": "Notes"]])
+        items += item("work-group", children: ["work-deep"], data: ["list": [String: Any]()])
+        items += item("work-deep", data: ["tab": ["savedURL": "https://example.com/deep", "savedTitle": "Deep"]])
+        let pinned = items.firstIndex { ($0 as? String) == "work-pinned" }! + 1
+        var container = items[pinned] as! [String: Any]
+        container["childrenIds"] = ["work-prs"]
+        items[pinned] = container
+        containers[main]["items"] = items
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let plan = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root))
+
+        let store = AppComposition(clock: ManualScheduler()).store
+        let result = store.apply(plan, includeArchive: false, includeSettings: false)
+        let tabs = plan.spaces.reduce(0) { $0 + $1.itemCount }
+        expect(result.report[.tabs].skipped == [ImportSkip(title: "Notes", url: "https://example.com/notes", reason: .notALiveItem),
+                                                ImportSkip(title: "Deep", url: "https://example.com/deep", reason: .notALiveItem)],
+               "the hand-added tab, and the tab in a hand-added folder, are listed as no item of the live folder")
+        expect(result.report[.tabs].total == tabs && result.report[.tabs].copied == tabs - 2, "and count in the total only")
+        for id in result.spaceIDs { store.deleteSpace(id) }
+    }
+
+    /// Dia's archive takes web pages only (Tests/Fixtures/Dia/StorableAutoArchive.json has a
+    /// chrome:// one): the page is listed when the archive comes over.
+    @MainActor
+    private static func diaImportReport() throws {
+        let plan = try DiaImporter.plan(secret: "cra-test-secret")
+        expect(plan.archive.map(\.url) == ["https://example.com/archived"]
+               && plan.archiveSkipped == [ImportSkip(title: "Settings", url: "chrome://settings/", reason: .notAWebPage, kind: .archive)],
+               "a chrome:// page in Dia's archive is left out and listed; its blank and new tab pages were never tabs")
+        let store = AppComposition(clock: ManualScheduler()).store
+        let without = store.apply(plan, includeArchive: false, includeSettings: false)
+        expect(!without.report[.archive].isShown
+               && without.report[.tabs].skipped == [ImportSkip(title: "Odd 4", url: "blob:https://example.com/5f1c", reason: .onlyInItsBrowser)],
+               "without the archive, only the sidebar's blob: tab is listed")
+        let with = store.apply(plan, includeArchive: true, includeSettings: false)
+        expect(with.report[.archive] == ImportReport(.archive, copied: 1, skipped: plan.archiveSkipped)
+               && with.report[.archive].summary == "1 of 2 tabs", "with it, the archive tile lists its chrome:// page")
+        expect(with.report[.tabs] == without.report[.tabs], "and the tabs tile stays as it was")
+        var noSpaces = plan
+        noSpaces.spaces = []
+        expect(plan.report(includeArchive: true)[.archive].isShown && noSpaces.report(includeArchive: true)[.archive].skipped == plan.archiveSkipped,
+               "with every space left out, the archive tile still shows its skipped page")
+        for id in without.spaceIDs + with.spaceIDs { store.deleteSpace(id) }
+    }
+
+    /// A skip for a tab or bookmark at Cra's own cra: address, which an import leaves behind (#742).
+    private static func cra(_ title: String, _ url: String, _ kind: ImportKind = .tabs) -> ImportSkip {
+        ImportSkip(title: title, url: url, reason: .craAddress, kind: kind)
+    }
+
+    /// Ardia's cra: tab and blob: tab (Tests/Fixtures/Ardia) are listed; its empty new tab and blank
+    /// page were never tabs, and its other addresses come over (#742).
+    @MainActor
+    private static func ardiaImportReport() throws {
+        let plan = try ArdiaImporter.plan()
+        let download = ImportSkip(title: "Download", url: "blob:https://design.example.com/5f1c", reason: .onlyInItsBrowser)
+        expect(plan.spaces.map(\.skipped) == [[cra("Cra Settings", "cra://settings")], [download], []],
+               "Ardia's cra: tab and blob: tab are listed in their spaces, nothing else")
+        let store = AppComposition(clock: ManualScheduler()).store
+        let result = store.apply(plan, includeArchive: false, includeSettings: false)
+        let tabs = plan.spaces.reduce(0) { $0 + $1.itemCount }
+        expect(result.report[.tabs].copied == tabs && result.report[.tabs].summary == "\(tabs) of \(tabs + 2) tabs", "two short of the total")
+        var picked = plan
+        picked.spaces.removeFirst()
+        let others = store.apply(picked, includeArchive: false, includeSettings: false)
+        expect(others.report[.tabs].skipped == [download], "a space not picked lists nothing of its own")
+        for id in result.spaceIDs + others.spaceIDs { store.deleteSpace(id) }
+    }
+
+    /// Yab's about:blank tab (Tests/Fixtures/Yab/session.json) is a blank page, never a tab: nothing
+    /// is listed.
+    private static func yabImportReport() throws {
+        let plan = try YabImporter.plan(supportDir: YabImporter.supportDir, pinsInEverySpace: false)
+        expect(plan.spaces.allSatisfy(\.skipped.isEmpty), "Yab's blank page is not listed")
+    }
+
+    /// The favorites tile counts favorites as the source holds them: two Yab
+    /// spaces that each own a github.com tile bring two, the shared tiles every space shows bring
+    /// theirs once. Both spaces here sign in on one Chromium profile.
+    private static func yabFavoritesCountAsYabHoldsThem() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("cra-yab-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: dir) }
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let work = "4D3C2B1A-0000-4000-8000-0000000000AA"
+        func write(_ name: String, _ json: Any) throws { try JSONSerialization.data(withJSONObject: json).write(to: dir.appendingPathComponent(name)) }
+        let tiles: [[String: Any]] = [["id": "g", "url": "https://github.com/", "title": "GitHub", "pin": "G"],
+                                      ["id": "c", "url": "cra://settings", "title": "Cra Settings", "pin": "C"]]
+        try write("spaces.json", [["id": YabImporter.firstID, "name": "Personal"], ["id": work, "name": "Work"]])
+        try write("session.json", ["tabs": tiles + [["id": "n", "url": "https://news.example.com/", "title": "News"]]])
+        try write("session-\(work).json", ["tabs": tiles + [["id": "d", "url": "https://design.example.com/", "title": "Design"]]])
+        try write("session-\(YabImporter.sharedPinsID).json", ["tabs": tiles])
+        let settings = cra("Cra Settings", "cra://settings", .favorites)
+
+        let own = try YabImporter.plan(supportDir: dir, pinsInEverySpace: false).report(includeArchive: false)[.favorites]
+        expect(own.copied == 2 && own.skipped == [settings, settings], "each space's own tiles count for that space: 2 GitHub tiles, 2 rows")
+        let shared = try YabImporter.plan(supportDir: dir, pinsInEverySpace: true).report(includeArchive: false)[.favorites]
+        expect(shared.copied == 1 && shared.skipped == [settings], "the shared tiles count once, though every space shows them")
+    }
+
+    /// Arc's cra: tab, favorite and archived tab are listed, each on its own tile.
+    private static func arcCraAddressesAreListed() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        var items = containers[main]["items"] as! [Any]
+        func add(_ id: String, _ url: String, _ title: String, to container: String) {
+            items += [id, ["id": id, "childrenIds": [String](), "createdAt": 800000000.0, "data": ["tab": ["savedURL": url, "savedTitle": title]]] as [String: Any]]
+            let at = items.firstIndex { ($0 as? String) == container }! + 1
+            var c = items[at] as! [String: Any]
+            c["childrenIds"] = (c["childrenIds"] as? [String] ?? []) + [id]
+            items[at] = c
+        }
+        add("home-cra", "cra://settings", "Cra Settings", to: "home-today")
+        add("fav-cra", "cra://downloads", "Downloads", to: "fav")
+        containers[main]["items"] = items
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let archive = ["items": [["sidebarItem": ["id": "old-cra", "data": ["tab": ["savedURL": "cra://history", "savedTitle": "History"]]],
+                                  "reason": "auto", "archivedAt": 700000000.0]]]
+        let plan = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root), archive: JSONSerialization.data(withJSONObject: archive))
+        let report = plan.report(includeArchive: true)
+        expect(report[.tabs].skipped == [cra("Cra Settings", "cra://settings")], "a cra: tab is listed on the tabs tile")
+        expect(plan.skipped.isEmpty && report[.favorites].skipped.map(\.url) == ["cra://downloads"] && report[.favorites].total == 3,
+               "a cra: favorite on the favorites tile, once, though Home and Work both show Default's Top Apps")
+        expect(report[.archive].skipped == [cra("History", "cra://history", .archive)], "a cra: archived tab on the archive tile")
+        expect(plan.selecting(spaces: [1], favorites: true).report(includeArchive: false)[.favorites].skipped.map(\.url) == ["cra://downloads"]
+               && !plan.selecting(spaces: [], favorites: true).report(includeArchive: false)[.favorites].isShown,
+               "it shows with a space that shows its list, and not with none picked")
+
+        // Work's profile with Top Apps of its own, holding the same cra: favorite: Arc holds two.
+        let work: [String: Any] = ["custom": ["_0": ["directoryBasename": "Profile 2", "machineID": "fixture-machine"]]]
+        items += ["fav2", ["id": "fav2", "childrenIds": ["fav2-cra"], "createdAt": 800000000.0,
+                           "data": ["itemContainer": ["containerType": ["topApps": ["_0": work]]]]] as [String: Any]]
+        items += ["fav2-cra", ["id": "fav2-cra", "childrenIds": [String](), "createdAt": 800000000.0,
+                               "data": ["tab": ["savedURL": "cra://downloads", "savedTitle": "Downloads"]]] as [String: Any]]
+        containers[main]["items"] = items
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let two = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root), archive: nil).report(includeArchive: false)[.favorites]
+        expect(two.skipped.map(\.url) == ["cra://downloads", "cra://downloads"], "a left-out favorite counts once per Top Apps container")
+    }
+
+    /// Dia's sidebar database (a plain one made here, in tabs.db's schema): a cra: tab is listed, a
+    /// cra: favorite on the favorites tile.
+    private static func diaSidebarCraAddressesAreListed() {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("cra-dia-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: file) }
+        var db: OpaquePointer?
+        sqlite3_open(file.path, &db)
+        sqlite3_exec(db, """
+            CREATE TABLE spaces (id TEXT PRIMARY KEY, title TEXT, creation_date DATE, theme TEXT);
+            CREATE TABLE nodes (id INTEGER PRIMARY KEY, kind TEXT, entity_id TEXT, parent_id INTEGER, "order" INTEGER, deleted_at DATETIME, space_id TEXT);
+            CREATE TABLE tabs (id TEXT PRIMARY KEY, node_id INTEGER, creation_date DATE);
+            CREATE TABLE tab_groups (id TEXT PRIMARY KEY, node_id INTEGER, title TEXT);
+            CREATE TABLE content_panes (id TEXT PRIMARY KEY, node_id INTEGER, custom_title TEXT);
+            CREATE TABLE web_contents (id INTEGER PRIMARY KEY, content_pane_id TEXT, url TEXT, title TEXT);
+            INSERT INTO spaces VALUES ('home', 'Home', '2026-10-01 08:00:00.000', 'neutral');
+            INSERT INTO nodes VALUES (1, 'window', 'w', NULL, 0, NULL, 'home'), (2, 'tab', 't-2', 1, 0, NULL, 'home'), (3, 'content_pane', 'p-3', 2, 0, NULL, 'home'),
+                (4, 'tab', 't-4', 1, 1, NULL, 'home'), (5, 'content_pane', 'p-5', 4, 0, NULL, 'home'),
+                (6, 'favorites', 'f', NULL, 1, NULL, 'home'), (7, 'tab', 't-7', 6, 0, NULL, 'home'), (8, 'content_pane', 'p-8', 7, 0, NULL, 'home');
+            INSERT INTO content_panes VALUES ('p-3', 3, NULL), ('p-5', 5, NULL), ('p-8', 8, NULL);
+            INSERT INTO web_contents (content_pane_id, url, title) VALUES ('p-3', 'https://example.com/open', 'Open'),
+                ('p-5', 'cra://settings', 'Cra Settings'), ('p-8', 'cra://downloads', 'Downloads');
+            """, nil, nil, nil)
+        sqlite3_close(db)
+        let spaces = SQLiteSnapshot(copying: file).map(DiaSidebar.spaces(in:)) ?? []
+        expect(spaces.first?.today.compactMap(\.url) == ["https://example.com/open"], "Dia's web page comes over")
+        expect(spaces.first?.skipped == [cra("Downloads", "cra://downloads", .favorites), cra("Cra Settings", "cra://settings")],
+               "its cra: favorite and cra: tab are listed, each on its own tile")
+    }
+
+    /// Dia's files from before 1.55 (a copy of Tests/Fixtures/Dia with cra: entries added): its open
+    /// tabs and favorites, and its bookmarks bar, list what they leave out, each on its tile.
+    private static func diaLegacyLeftOutAreListed() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("cra-dia-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: dir) }
+        try fm.copyItem(at: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Dia"), to: dir)
+        func tab(_ url: String, _ title: String) -> [String: Any] {
+            ["contents": [["variant": ["webContent": ["_0": ["url": url, "title": title]]]]], "creationDate": 800000000.0]
+        }
+        let containers = dir.appendingPathComponent("StorableProfileContainers.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: containers)) as! [String: Any]
+        var list = root["containers"] as! [[String: Any]]
+        list[0]["tabs"] = (list[0]["tabs"] as! [Any]) + [tab("cra://downloads", "Downloads")]
+        list[1]["tabs"] = (list[1]["tabs"] as! [Any]) + [tab("cra://settings", "Cra Settings")]
+        root["containers"] = list
+        try JSONSerialization.data(withJSONObject: root).write(to: containers)
+        let bookmarksFile = dir.appendingPathComponent("User Data/Profile 1/Bookmarks")
+        var bookmarks = try JSONSerialization.jsonObject(with: Data(contentsOf: bookmarksFile)) as! [String: Any]
+        var roots = bookmarks["roots"] as! [String: Any], bar = roots["bookmark_bar"] as! [String: Any]
+        var kids = bar["children"] as! [[String: Any]]
+        kids[0]["children"] = (kids[0]["children"] as! [Any]) + [["type": "url", "name": "History", "url": "cra://history"]]
+        kids.append(["type": "url", "name": "Extensions", "url": "cra://extensions"])
+        bar["children"] = kids
+        roots["bookmark_bar"] = bar
+        bookmarks["roots"] = roots
+        try JSONSerialization.data(withJSONObject: bookmarks).write(to: bookmarksFile)
+
+        let plan = try DiaImporter.plan(supportDir: dir, userData: dir.appendingPathComponent("User Data"))
+        let download = ImportSkip(title: "Download", url: "blob:https://example.com/5f1c", reason: .onlyInItsBrowser)
+        let all = plan.report(includeArchive: false)
+        expect(all[.favorites].skipped == [cra("Downloads", "cra://downloads", .favorites), cra("Extensions", "cra://extensions", .favorites)]
+               && Set(all[.tabs].skipped.map(\.url)) == ["blob:https://example.com/5f1c", "cra://settings", "cra://history"] && all[.tabs].skipped.count == 4,
+               "a favorite and the bar's own bookmark go on the favorites tile, open tabs and folders' bookmarks on the tabs tile")
+        let dia = plan.spaces.firstIndex { $0.title == "Dia" }, reading = plan.spaces.firstIndex { $0.title == "Reading" }
+        expect(dia.map { plan.spaces[$0].skipped } == [download, cra("Cra Settings", "cra://settings")]
+               && reading.map { plan.spaces[$0].skipped } == [download, cra("History", "cra://history")],
+               "the open tabs' rows go with the Dia space, a folder's with the space it becomes")
+        let nothing = plan.selecting(spaces: [], favorites: false).report(includeArchive: false)
+        expect(!nothing[.tabs].isShown && !nothing[.favorites].isShown, "with no space and no favorites picked, nothing is listed")
+    }
+
+    /// Chrome's file: bookmark and its other addresses come over (#742); its new tab page and closed
+    /// tab were never tabs. A cra: bookmark or tab is listed. A session or Bookmarks file that can't
+    /// be read is one row.
+    @MainActor
+    private static func chromiumImportReport() {
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Chromium")
+        let plan = (try? ChromiumImporter.plan(browser: "Chrome", userData: fixtures)) ?? ImportPlan(source: "Chrome")
+        let download = ImportSkip(title: "Download", url: "blob:https://example.com/5f1c", reason: .onlyInItsBrowser)
+        expect(plan.spaces.count == 1 && plan.spaces.first?.skipped == [download, download],
+               "Chrome's blob: bookmark and blob: tab are listed; its new tab page, blank page and closed tab are not")
+
+        // SNSS version 1: one tab at a cra: address. Pickles: uint32 payload size, then 4-byte aligned fields.
+        func pickle(_ fields: [Data]) -> Data { let body = fields.reduce(Data(), +); return le32(UInt32(body.count)) + body }
+        func le32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
+        func string(_ s: String) -> Data { let d = Data(s.utf8); return le32(UInt32(d.count)) + d + Data(count: (4 - d.count % 4) % 4) }
+        func string16(_ s: String) -> Data {
+            let units = Array(s.utf16), d = units.reduce(Data()) { $0 + withUnsafeBytes(of: $1.littleEndian) { Data($0) } }
+            return le32(UInt32(units.count)) + d + Data(count: (4 - d.count % 4) % 4)
+        }
+        func command(_ id: UInt8, _ body: Data) -> Data { withUnsafeBytes(of: UInt16(body.count + 1).littleEndian) { Data($0) } + Data([id]) + body }
+        let session = Data("SNSS".utf8) + le32(1)
+            + command(6, pickle([le32(7), le32(0), string("cra://settings"), string16("Cra Settings")]))
+            + command(7, le32(7) + le32(0))
+        var rows: [ImportSkip] = []
+        _ = ChromiumImporter.parseSession(session, file: "Session_8") { rows.append($0) }
+        expect(rows == [cra("Cra Settings", "cra://settings")], "a cra: tab in the session is listed")
+        rows = []
+        _ = ChromiumImporter.parseSession(Data("SNSS".utf8) + Data([4, 0, 0, 0]) + Data(repeating: 1, count: 16), file: "Session_9") { rows.append($0) }
+        expect(rows == [.unreadable("Open tabs", file: "Session_9")], "an encrypted session is one row")
+
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("cra-unreadable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        try? fm.createDirectory(at: root.appendingPathComponent("Default"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: root.appendingPathComponent("Profile 1"), withIntermediateDirectories: true)
+        try? Data(#"{"roots":{"bookmark_bar":{"children":[{"type":"url","name":"Docs","url":"https://docs.example.com/"},{"type":"url","name":"Cra Settings","url":"cra://settings"}]}}}"#.utf8)
+            .write(to: root.appendingPathComponent("Profile 1/Bookmarks"))
+        let bookmarks = root.appendingPathComponent("Default/Bookmarks")
+        try? Data("{not json".utf8).write(to: bookmarks)
+        let broken = (try? ChromiumImporter.plan(browser: "Chrome", userData: root)) ?? ImportPlan(source: "Chrome")
+        expect(broken.spaces.map(\.skipped) == [[cra("Cra Settings", "cra://settings")]], "a cra: bookmark is listed in its profile's space")
+        expect(broken.skipped == [.unreadable("Bookmarks", file: bookmarks.path)],
+               "a damaged Bookmarks file is one row, kept though the profile brings no space")
+        var noSpaces = broken
+        noSpaces.spaces = []
+        expect(noSpaces.report(includeArchive: false)[.tabs].isShown, "with no space to import, the tabs tile still shows, for the row")
+        let result = AppComposition(clock: ManualScheduler()).store.apply(noSpaces, includeArchive: false, includeSettings: false)
+        expect(result.report[.tabs].skipped == broken.skipped && result.report[.tabs].summary == "No tabs", "the row shows without a count")
+    }
+
+    /// A Firefox or Zen profile in a temporary folder: profiles.ini and the given files.
+    private static func firefoxProfile(_ files: [String: Data]) -> (root: URL, profile: URL) {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("cra-firefox-\(UUID().uuidString)", isDirectory: true)
+        let profile = root.appendingPathComponent("abc.default-release", isDirectory: true)
+        try? fm.createDirectory(at: profile.appendingPathComponent("sessionstore-backups"), withIntermediateDirectories: true)
+        try? Data("[Profile0]\nName=default-release\nIsRelative=1\nPath=abc.default-release\nDefault=1\n".utf8)
+            .write(to: root.appendingPathComponent("profiles.ini"))
+        fm.createFile(atPath: profile.appendingPathComponent("places.sqlite").path, contents: Data())
+        for (name, data) in files { try? data.write(to: profile.appendingPathComponent(name)) }
+        return (root, profile)
+    }
+
+    /// Firefox's cra: and place: bookmarks and cra: and blob: tabs are listed; a session store that
+    /// can't be read is one row.
+    private static func firefoxImportReport() {
+        let session = (try? mozLz4(["windows": [["tabs": [
+            ["entries": [["url": "https://example.com/open", "title": "Open"]], "index": 1],
+            ["entries": [["url": "cra://history", "title": "History"]], "index": 1],
+            ["entries": [["url": "blob:https://example.com/5f1c", "title": "Download"]], "index": 1],
+        ]]]])) ?? Data()
+        let (root, profile) = firefoxProfile(["sessionstore.jsonlz4": session])
+        defer { try? FileManager.default.removeItem(at: root) }
+        var db: OpaquePointer?
+        sqlite3_open(profile.appendingPathComponent("places.sqlite").path, &db)
+        sqlite3_exec(db, """
+            CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url TEXT, title TEXT);
+            CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER, position INTEGER, title TEXT, dateAdded INTEGER, guid TEXT);
+            INSERT INTO moz_places VALUES (1, 'https://example.com/docs', 'Docs'), (2, 'cra://settings', NULL), (3, 'place:sort=8&maxResults=10', NULL);
+            INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 0, 0, '', 0, 'root________'), (2, 2, NULL, 1, 0, 'toolbar', 0, 'toolbar_____'),
+                (3, 1, 1, 2, 0, 'Docs', 0, 'b1'), (4, 1, 2, 2, 1, 'Cra Settings', 0, 'b2'), (5, 1, 3, 2, 2, 'Most Visited', 0, 'b3');
+            """, nil, nil, nil)
+        sqlite3_close(db)
+        let plan = (try? FirefoxImporter.plan(browser: "Firefox", root: root)) ?? ImportPlan(source: "Firefox")
+        expect(plan.spaces.first?.pinned.map(\.url) == ["https://example.com/docs"] && plan.spaces.first?.today.map(\.url) == ["https://example.com/open"],
+               "Firefox's web pages come over")
+        expect(plan.spaces.first?.skipped == [cra("Cra Settings", "cra://settings"),
+                                              ImportSkip(title: "Most Visited", url: "place:sort=8&maxResults=10", reason: .onlyInItsBrowser),
+                                              cra("History", "cra://history"),
+                                              ImportSkip(title: "Download", url: "blob:https://example.com/5f1c", reason: .onlyInItsBrowser)],
+               "its cra: bookmark, place: query, cra: tab and blob: tab are listed")
+
+        let (brokenRoot, brokenProfile) = firefoxProfile(["sessionstore.jsonlz4": Data("mozLz40\0garbage".utf8)])
+        defer { try? FileManager.default.removeItem(at: brokenRoot) }
+        var rows: [ImportSkip] = []
+        _ = FirefoxImporter.openTabs(profile: brokenProfile) { rows.append($0) }
+        expect(rows == [.unreadable("Open tabs", file: brokenProfile.appendingPathComponent("sessionstore.jsonlz4").path)],
+               "a session store that can't be read is one row")
+    }
+
+    /// Zen's cra: tab is listed, its cra: Essential on the favorites tile; its empty and glance tabs
+    /// were never tabs.
+    private static func zenImportReport() {
+        let sidebar = (try? mozLz4(["spaces": [["uuid": "s1", "name": "Home", "position": 0], ["uuid": "s2", "name": "Work", "position": 1]], "folders": [], "tabs": [
+            ["zenWorkspace": "s2", "entries": [["url": "https://example.com/b", "title": "B"]], "index": 1],
+            ["zenWorkspace": "s1", "entries": [["url": "https://example.com/a", "title": "A"]], "index": 1],
+            ["zenWorkspace": "s1", "entries": [["url": "cra://downloads", "title": "Downloads"]], "index": 1],
+            ["zenWorkspace": "s1", "zenEssential": true, "entries": [["url": "cra://settings", "title": "Cra Settings"]], "index": 1],
+            ["zenWorkspace": "s1", "zenIsEmpty": true, "entries": [["url": "about:blank", "title": ""]], "index": 1],
+            ["zenWorkspace": "s1", "zenIsGlance": true, "entries": [["url": "cra://history", "title": "History"]], "index": 1],
+        ]])) ?? Data()
+        let (root, _) = firefoxProfile(["zen-sessions.jsonlz4": sidebar])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = (try? ZenImporter.plan(root: root)) ?? ImportPlan(source: "Zen")
+        expect(plan.spaces.first?.today.map(\.url) == ["https://example.com/a"], "Zen's web page comes over")
+        let settings = cra("Cra Settings", "cra://settings", .favorites)
+        expect(plan.spaces.first?.skipped == [cra("Downloads", "cra://downloads"), settings],
+               "its cra: tab is listed on the tabs tile, its cra: Essential on the favorites tile, the empty and glance tabs nowhere")
+        var work = plan
+        work.spaces.removeFirst()
+        expect(work.spaces.map(\.title) == ["Work"] && work.report(includeArchive: false)[.favorites].skipped == [settings],
+               "the Essentials come with every space, and so does the row of the one left out")
+        expect(plan.report(includeArchive: false)[.favorites].skipped == [settings], "listed once with both spaces picked")
+    }
+
+    /// Safari's exported cra: bookmark is listed. The Reading List isn't bookmarks: nothing in it is.
+    private static func safariImportReport() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("cra-safari-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: folder) }
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("""
+            <DL><p>
+            <DT><H3>Favorites</H3>
+            <DL><p>
+            <DT><A HREF="https://example.com/docs">Docs</A>
+            <DT><A HREF="cra://settings">Cra Settings</A>
+            </DL><p>
+            <DT><H3>Reading List</H3>
+            <DL><p>
+            <DT><A HREF="https://example.com/later">Later</A>
+            <DT><A HREF="cra://history">History</A>
+            </DL><p>
+            </DL><p>
+            """.utf8).write(to: folder.appendingPathComponent("Bookmarks.html"))
+        let plan = try SafariImporter.read(folder).plan
+        expect(plan.spaces.first?.pinned.map(\.url) == ["https://example.com/docs"]
+               && plan.spaces.first?.skipped == [cra("Cra Settings", "cra://settings")],
+               "Safari's cra: bookmark is listed; the Reading List stays out whole, so nothing in it is")
     }
 
     /// Ardia (X request, 18 Nov): its profiles are its spaces (Tests/Fixtures/Ardia/session.json).
@@ -301,8 +991,12 @@ enum StoreTests {
                "unpinned tabs of every window come over, an empty new tab left out, an unpinned group flattened")
         expect(personal.profile == nil && personal.emoji == "" && personal.theme?.accent == "#C07A98",
                "the first profile stays on Default; no icon is a dot; its swatch becomes the theme")
-        expect(work.favorites.compactMap(\.url) == ["https://tasks.example.com/"] && work.today.compactMap(\.url) == ["https://design.example.com/"],
-               "a Top Apps folder's tiles come over as favorites")
+        expect(work.favorites.compactMap(\.url) == ["https://tasks.example.com/"], "a Top Apps folder's tiles come over as favorites")
+        expect(work.today.compactMap(\.url) == ["https://design.example.com/", "file:///Users/me/notes.html",
+                                                "javascript:void(document.title)", "chrome://settings/"],
+               "open tabs come over whatever their address; about:blank and blob: left out")
+        expect(work.pinned.compactMap(\.url) == ["https://status.example.com/now"] && work.pinned.first?.pageTitle == "Status now",
+               "a tab pinned with a new tab page comes over pinned, at the page it shows and that page's title")
         expect(work.profile == ImportedProfile(folder: "Profile p-work", name: "Work") && work.emoji == "💼",
                "a profile signs in on Chromium's \"Profile <id>\" folder")
         expect(side.pinned.count == 1 && side.pinned[0].pageTitle == "Talk" && side.pinned[0].children.compactMap(\.url) == ["https://chat.example.com/"],
@@ -323,14 +1017,137 @@ enum StoreTests {
         for id in result.spaceIDs { store.deleteSpace(id) }
     }
 
+    // promise: #802
+    /// Phi (#802): its SwiftData store (Tests/Fixtures/Phi/Phi/users/<account>/localDB, made with
+    /// Phi's own models, see make-store.swift.txt). Spaces come in Phi's order without its agent
+    /// spaces; a space's bookmark tree is its pinned section, folders nested and split bookmarks
+    /// a page each; pinned tabs are favorites, read in the store's Pinned Tab Scope (a space's own,
+    /// a profile's shared by its spaces, or one set for every space). A space on another Chromium
+    /// profile lands on a Cra profile, so its sign-ins follow.
+    @MainActor
+    private static func phiImport() throws {
+        expect(PhiImporter.isAvailable, "a LocalStore.sqlite under Phi/users counts as Phi data")
+        let plan = try PhiImporter.plan()
+        expect(plan.source == "Phi" && plan.spaces.map(\.title) == ["Home", "Work", "Reading"],
+               "Phi's spaces come over in its order; its agent spaces stay behind")
+        let home = plan.spaces[0], work = plan.spaces[1], reading = plan.spaces[2]
+        expect(home.favorites.compactMap(\.url) == ["https://mail.google.com/mail/u/0/", "https://www.youtube.com/"],
+               "a space's pinned tabs are its favorites, in Phi's order; other scopes' copies and open tabs stay out")
+        expect(home.pinned.map { $0.url ?? "folder " + $0.pageTitle } == ["folder Docs", "https://mail.google.com/", "https://calendar.google.com/",
+                                                                         "https://news.ycombinator.com/", "https://github.com/", "chrome://settings/"],
+               "the bookmark tree is the pinned section, in Phi's order; a split bookmark brings each page")
+        let docs = home.pinned[0].children
+        expect(docs.count == 2 && docs[0].url == "https://www.swift.org/" && docs[1].isFolder && docs[1].pageTitle == "Deep"
+               && docs[1].children.compactMap(\.url) == ["https://developer.apple.com/"], "folders nest")
+        expect(home.pinned[4].customTitle == "Code" && home.pinned[4].pageTitle == "GitHub · Where software is built"
+               && home.pinned[2].pageTitle == "Calendar", "a renamed bookmark keeps its name; a split's second page its own title")
+        expect(home.skipped == [cra("Cra Settings", "cra://settings")], "a cra: bookmark is listed")
+        expect(home.emoji == "🏠" && home.profile == nil && home.theme?.accent == "#3A6FF8",
+               "an emoji icon, the Default profile, the space's colour as its theme")
+        expect(work.favorites.compactMap(\.url) == ["https://app.slack.com/"] && work.skipped == [cra("Downloads", "cra://downloads", .favorites)]
+               && work.pinned.compactMap(\.url) == ["https://linear.app/"], "each space has its own favorites and pinned section")
+        expect(work.profile == ImportedProfile(folder: "Profile 1", name: "Work") && work.emoji == "" && work.symbol == nil,
+               "a space on \"Profile 1\" signs in there; a Phi artwork icon is a dot")
+        expect(reading.emoji == "9️⃣" && reading.pinned.isEmpty && reading.favorites.isEmpty && reading.profile == nil,
+               "an empty space still comes over; a many-code-point emoji is read whole")
+        expect(plan.favorites.isEmpty && home.today.isEmpty, "nothing is left without a space; Phi keeps open tabs in Chromium's session, not here")
+
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Phi/scopes")
+        let byProfile = try PhiImporter.plan(store: fixtures.appendingPathComponent("profile.sqlite"))
+        expect(byProfile.spaces.map { $0.favorites.compactMap(\.url) } == [["https://profile.example/"], ["https://work-profile.example/"], ["https://profile.example/"]]
+               && byProfile.spaces.map(\.favoritesList) == ["profile Default", "profile Profile 1", "profile Default"],
+               "Pinned Tab Scope Profile: a profile's pinned tabs show in each of its spaces, counted once; a dormant one stays out")
+        let byApp = try PhiImporter.plan(store: fixtures.appendingPathComponent("app.sqlite"))
+        expect(byApp.spaces.allSatisfy { $0.favorites.compactMap(\.url) == ["https://app.example/"] && $0.favoritesList == "app" },
+               "Pinned Tab Scope App: the same pinned tabs in every space")
+
+        let phi = ImportSource.allCases.first { $0.id == "phi" }
+        expect(phi?.isAvailable == true && phi?.keychainService == "Phi Safe Storage" && phi?.keychainAccount == "Phi",
+               "Phi is listed from its folder, its passwords and cookies open with Phi's Keychain item")
+        expect(phi?.credentialProfiles.map(\.id) == ["Default", "Profile 1"], "Phi's Chromium profiles sit right in its folder")
+
+        let composition = AppComposition(clock: ManualScheduler())
+        let store = composition.store
+        let result = store.apply(plan, includeArchive: false, includeSettings: false)
+        expect(result.spaces == 3 && result.folders == 2, "applying adds the three spaces and the two folders")
+        let spaces = result.spaceIDs.compactMap { store.space($0) }
+        expect(spaces[0].profileID == nil && spaces[1].profileID != nil && spaces[2].profileID == nil,
+               "Work goes on a Cra profile of its own, Home and Reading stay on Default")
+        expect(store.integrityProblems().isEmpty, "the imported sidebar is sound")
+        for id in result.spaceIDs { store.deleteSpace(id) }
+    }
+
+    // promise: #688
+    /// Crest (Discussion #688): its session file (Tests/Fixtures/Crest/ControlPlane/session.sqlite, in
+    /// Crest's own format, see make-session.txt). Spaces come in Crest's order; tile-row tabs are
+    /// favorites and saved tabs the pinned section, both at the page they were saved with, saved
+    /// folders nested; current tabs are Today, a current folder's tabs on their own. Crest's own
+    /// pages and blank tabs stay behind, cra: addresses are listed, and archived tabs come over
+    /// newest first. The first Space stays on Default; the others land on a Cra profile for their
+    /// "Crest-<id>" Chromium folder, Spaces sharing one on the same Cra profile.
+    @MainActor
+    private static func crestImport() throws {
+        expect(CrestImporter.isAvailable, "ControlPlane/session.sqlite counts as Crest data")
+        let plan = try CrestImporter.plan()
+        expect(plan.source == "Crest" && plan.spaces.map(\.title) == ["Work", "Personal", "Side"], "Crest's Spaces come over in its order")
+        let work = plan.spaces[0], personal = plan.spaces[1], side = plan.spaces[2]
+        expect(work.favorites.compactMap(\.url) == ["https://mail.example.com/"] && work.favorites[0].pageTitle == "Inbox",
+               "a tile-row tab is a favorite, at the page it was saved with")
+        expect(work.skipped == [cra("Cra Settings", "cra://settings", .favorites)], "a cra: favorite is listed")
+        expect(work.pinned.map { $0.url ?? "folder " + $0.pageTitle } == ["folder Projects", "https://status.example.com/now"],
+               "saved tabs are the pinned section, a folder where its first tab is; Crest's own Settings page stays behind")
+        let projects = work.pinned[0].children
+        expect(projects.count == 2 && projects[0].url == "https://github.com/" && projects[0].customTitle == "Code"
+               && projects[1].isFolder && projects[1].pageTitle == "Reading" && projects[1].children.compactMap(\.url) == ["https://docs.example.com/"],
+               "saved folders nest through parentID, renamed tabs keep their name")
+        expect(work.today.compactMap(\.url) == ["https://news.example.com/", "https://left.example.com/"],
+               "current tabs are Today, a current folder's tabs on their own; a blank tab and the Start Page stay behind")
+        expect(work.profile == nil && work.emoji == "" && work.symbol == "hammer.fill" && work.theme?.colors == ["#3C0E1A", "#722030"],
+               "the first Space stays on Default, with its SF Symbol and its branding colours")
+        expect(personal.favorites.compactMap(\.url) == ["https://calendar.example.com/"] && personal.pinned.compactMap(\.url) == ["file:///Users/me/notes.html"],
+               "each Space reads its own tabs; a file: page comes over")
+        expect(personal.emoji == "🏡" && personal.theme?.accent == "#1F7D85", "a crest.emoji: icon, and the accent's swatch without branding colours")
+        expect(personal.profile == ImportedProfile(folder: "Crest-B0000000-0000-4000-8000-00000000000B", name: "Personal"),
+               "a later Space signs in on its own \"Crest-<id>\" folder")
+        expect(side.profile == personal.profile && side.pinned.isEmpty && side.symbol == "leaf",
+               "a Space sharing another's Chromium profile goes on the same one; an empty Space still comes over")
+        expect(plan.archive.map(\.url) == ["https://spec.example.com/", "https://plan.example.com/"]
+               && plan.archive.map(\.reason) == [.manual, .auto] && plan.archive[0].customTitle == "Spec" && plan.archive[0].spaceTitle == "Work",
+               "archived tabs come over newest first, a cleanup as auto-archived")
+        expect(plan.archiveSkipped.map(\.url) == ["blob:https://files.example.com/5c1e"], "an archived blob: tab is listed")
+
+        let crest = ImportSource.allCases.first { $0.id == "crest" }
+        expect(crest?.isAvailable == true && crest?.keychainService == "Crest Safe Storage" && crest?.keychainAccount == "com.pauldavis.crest",
+               "Crest is listed from its folder, its passwords and cookies open with Crest's Keychain item")
+        expect(crest?.credentialProfiles.map(\.id) == ["Crest-A0000000-0000-4000-8000-00000000000A", "Crest-B0000000-0000-4000-8000-00000000000B"]
+               && crest?.credentialProfiles.map(\.name) == ["Work", "Personal"],
+               "Crest's \"Crest-<id>\" folders are found, shown by Space; its Default and a folder no Space uses are left out")
+
+        let composition = AppComposition(clock: ManualScheduler())
+        let store = composition.store
+        let result = store.apply(plan, includeArchive: true, includeSettings: false)
+        expect(result.spaces == 3 && result.folders == 2 && result.archived == 2, "applying adds the Spaces, their folders and the archive")
+        let spaces = result.spaceIDs.compactMap { store.space($0) }
+        expect(spaces[0].profileID == nil && spaces[1].profileID != nil && spaces[1].profileID == spaces[2].profileID,
+               "Personal and Side share one Cra profile, Work stays on Default")
+        expect(result.profiles.craFolder(forSource: "Crest-B0000000-0000-4000-8000-00000000000B") != "Default"
+               && result.profiles.craFolder(forSource: "Crest-A0000000-0000-4000-8000-00000000000A") == "Default",
+               "Personal's cookies go to its Cra profile, Work's to Default")
+        expect(store.integrityProblems().isEmpty, "the imported sidebar is sound")
+        for id in result.spaceIDs { store.deleteSpace(id) }
+    }
+
+    // promise: #734
     /// Yab (X request, 18 Nov): spaces.json plus one session file per space
     /// (Tests/Fixtures/Yab). Tiles are favorites, kept tabs the pinned section in their folders,
-    /// the rest Today; a space without tiles of its own shows the shared ones. A space with
-    /// sign-ins of its own is on the Chromium folder its receipt names.
+    /// the rest Today. With "pins in every space" on, a space that signs in where the first one does
+    /// shows the shared tiles and a space with sign-ins of its own keeps its own (PR #734, Yab's
+    /// SharedPins.showsShared). A space with sign-ins of its own is on the Chromium folder its
+    /// receipt names.
     @MainActor
     private static func yabImport() throws {
         expect(YabImporter.isAvailable, "spaces.json counts as Yab data")
-        let plan = try YabImporter.plan()
+        let plan = try YabImporter.plan(supportDir: YabImporter.supportDir, pinsInEverySpace: nil)
         expect(plan.source == "Yab" && plan.spaces.map(\.title) == ["Personal", "Work"], "Yab's spaces come over in its order")
         let personal = plan.spaces[0], work = plan.spaces[1]
         expect(personal.favorites.compactMap(\.url) == ["https://mail.example.com/"] && personal.favorites[0].pageTitle == "Inbox",
@@ -343,7 +1160,8 @@ enum StoreTests {
         expect(personal.today.compactMap(\.url) == ["https://news.example.com/"], "today's tabs come over, about:blank left out")
         expect(personal.emoji == "🏠" && personal.profile == nil && personal.theme?.accent == "#8DB6E6",
                "an emoji icon, the shared sign-ins on Default, a swatch as the theme")
-        expect(work.favorites.compactMap(\.url) == ["https://calendar.example.com/"], "a space without tiles of its own gets the shared ones")
+        expect(work.favorites.compactMap(\.url) == ["https://docs.example.com/"],
+               "pins in every space unset is Yab's In Each Space for a Mac in use: each space keeps its own tiles")
         expect(work.pinned.compactMap(\.url) == ["https://wiki.example.com/"] && work.today.compactMap(\.url) == ["https://design.example.com/"],
                "each space reads its own session file")
         expect(work.profile == ImportedProfile(folder: "space-9C6B1E52-3D1F-4C2B-8E37-5A0F1D2C3B4A", name: "Work"),
@@ -352,7 +1170,13 @@ enum StoreTests {
                "an Icon-tab symbol and a colour of its own with grain")
         let shared = try YabImporter.plan(supportDir: YabImporter.supportDir, pinsInEverySpace: true)
         expect(shared.spaces[0].favorites.compactMap(\.url) == ["https://calendar.example.com/"],
-               "with pins in every space on, every space shows the shared tiles")
+               "with pins in every space on, a space that signs in where the first one does shows the shared tiles")
+        expect(shared.spaces[1].favorites.compactMap(\.url) == ["https://docs.example.com/"],
+               "with pins in every space on, a space with sign-ins of its own keeps its own tiles, not the shared ones")
+        let apart = try YabImporter.plan(supportDir: YabImporter.supportDir, pinsInEverySpace: false)
+        expect(apart.spaces[0].favorites.compactMap(\.url) == ["https://mail.example.com/"]
+               && apart.spaces[1].favorites.compactMap(\.url) == ["https://docs.example.com/"],
+               "with pins in every space off, each space keeps its own tiles and none gets the shared ones")
 
         let yab = ImportSource.allCases.first { $0.id == "yab" }, ardia = ImportSource.allCases.first { $0.id == "ardia" }
         expect(yab?.isAvailable == true && ardia?.isAvailable == true, "both are listed in the picker from their data alone")
@@ -373,23 +1197,440 @@ enum StoreTests {
         expect(composition.store.integrityProblems().isEmpty, "the imported sidebar is sound")
     }
 
+    /// Yab keeps icons of its own (Tests/Fixtures/Yab/icons): per page, listed in pages.json as
+    /// "<host><path>" and stored as pages/<hash>.png, else per host as <host>.png.
+    @MainActor
+    private static func yabOwnIcons() throws {
+        // A copy of the fixture with a second tab on news.example.com, at the page with an icon of its own.
+        let fixture = YabImporter.supportDir
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("cra-yab-icons-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture, to: copy)
+        setenv("CRA_YAB_DIR", copy.path, 1)
+        defer { setenv("CRA_YAB_DIR", fixture.path, 1); try? FileManager.default.removeItem(at: copy) }
+        let session = copy.appendingPathComponent("session.json")
+        guard var root = try JSONSerialization.jsonObject(with: Data(contentsOf: session)) as? [String: Any], var tabs = root["tabs"] as? [[String: Any]] else {
+            return expect(false, "the Yab fixture's session.json reads")
+        }
+        tabs.append(["id": "i", "url": "https://news.example.com/sport", "title": "Sport"])
+        root["tabs"] = tabs
+        try JSONSerialization.data(withJSONObject: root).write(to: session)
+
+        let icons = YabImporter.supportDir.appendingPathComponent("icons", isDirectory: true)
+        func shrunk(_ file: String) -> Data? { (try? Data(contentsOf: icons.appendingPathComponent(file))).flatMap { FaviconCache.png($0) } }
+        func icon(_ item: ImportedItem?) -> Data? { item?.faviconPath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) } }
+        let plan = try YabImporter.plan(pinsInEverySpace: nil)
+        let personal = plan.spaces[0], work = plan.spaces[1]
+        let news = personal.today.first { $0.url == "https://news.example.com/" }, sport = personal.today.first { $0.url == "https://news.example.com/sport" }
+        expect(icon(sport) != nil && icon(sport) == shrunk("pages/5f0a1c2e3d4b5a6978695a4b.png"), "a tab on a page Yab has an icon for gets that page's icon")
+        expect(icon(news) != nil && icon(news) == shrunk("news.example.com.png"), "a tab on another page of the host gets the host's icon")
+        expect(icon(personal.favorites.first) != nil && icon(personal.favorites.first) == shrunk("mail.example.com.png"), "a tile gets its host's icon")
+        expect(work.today.first?.url == "https://design.example.com/" && work.today.first?.faviconPath == nil,
+               "a host with no icon file and no Favicons row gets none")
+
+        let store = AppComposition(clock: ManualScheduler()).store
+        let space = store.apply(plan, includeArchive: false, includeSettings: false).spaceIDs[0]
+        let today = (store.space(space)?.todayContainerID).map(store.tabs(under:)) ?? []
+        let newsTab = today.first { $0.tab?.url == "https://news.example.com/" }, sportTab = today.first { $0.tab?.url == "https://news.example.com/sport" }
+        expect(icon(news) != icon(sport) && savedFavicon(newsTab?.tab?.faviconKey) == icon(news) && savedFavicon(sportTab?.tab?.faviconKey) == icon(sport),
+               "two tabs on one host keep their different icons after the import")
+    }
+
+    /// The onboarding pin picker shows each site's icon from the stores the import reads: Yab's own
+    /// icons/ folder before its Favicons databases.
+    private static func pinPickerReadsTheImportsIconStores() {
+        let found = ImportSource.allCases.first { $0.id == "yab" }?.favicons(hosts: ["mail.example.com", "design.example.com"]) ?? [:]
+        expect(found["mail.example.com"] != nil, "a site Yab has an icon file for shows it in the pin picker")
+        expect(found["design.example.com"] == nil, "a site with no icon anywhere shows none")
+    }
+
+    /// Icon files come from other browsers' stores and, for unit 2, from sites: a bitmap is shrunk
+    /// without being decoded at the size it claims, so a 20000 px PNG of a few KB costs nothing.
+    private static func iconFilesAreDecodedSmall() {
+        let start = Date()
+        let bomb = FaviconCache.png(hugePNG(side: 20000))
+        expect(Date().timeIntervalSince(start) < 1, "a PNG claiming 20000 px is handled at once, not decoded at that size")
+        expect(bomb.flatMap(NSBitmapImageRep.init(data:)).map { $0.pixelsWide <= 64 } ?? true, "and gives at most a 64 px icon")
+
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 256, pixelsHigh: 128, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                   isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        let wide = rep?.representation(using: .png, properties: [:]).flatMap { FaviconCache.png($0) }.flatMap(NSBitmapImageRep.init(data:))
+        expect(wide?.pixelsWide == 64 && wide?.pixelsHigh == 32, "a 256 px bitmap icon is shrunk to 64 px, keeping its shape")
+        let svg = #"<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="orange"/></svg>"#
+        let drawn = FaviconCache.png(Data(svg.utf8)).flatMap(NSBitmapImageRep.init(data:))
+        expect(drawn != nil && (drawn?.pixelsWide ?? .max) <= 64, "an SVG, which ImageIO can't read, is drawn at 64 px")
+    }
+
+    /// A black 1-bit PNG `side` px square, a few KB of zlib: a decoder that trusts its size allocates GBs.
+    private static func hugePNG(side: Int) -> Data {
+        func be32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+        func crc32(_ d: Data) -> UInt32 {
+            var c: UInt32 = 0xFFFF_FFFF
+            for byte in d {
+                c ^= UInt32(byte)
+                for _ in 0..<8 { c = c & 1 == 1 ? (c >> 1) ^ 0xEDB8_8320 : c >> 1 }
+            }
+            return ~c
+        }
+        func chunk(_ type: String, _ body: Data) -> Data { let t = Data(type.utf8) + body; return be32(UInt32(body.count)) + t + be32(crc32(t)) }
+        let raw = side * (1 + (side + 7) / 8)  // every row: filter byte 0, then zero bits
+        let deflated = ((try? (Data(count: raw) as NSData).compressed(using: .zlib)) as Data?) ?? Data()
+        // zlib wraps the deflate stream: a header, and an Adler-32 that for zeros is (n mod 65521) << 16 | 1.
+        let zlib = Data([0x78, 0x01]) + deflated + be32(UInt32(raw % 65521) << 16 | 1)
+        let header = be32(UInt32(side)) + be32(UInt32(side)) + Data([1, 0, 0, 0, 0])
+        return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + chunk("IHDR", header) + chunk("IDAT", zlib) + chunk("IEND", Data())
+    }
+
+    /// Chromium's Favicons and Firefox's favicons.sqlite hold icons by page address. A tab finds its
+    /// host's under http or https, on any port, with www. added or dropped, but never a sibling's.
+    private static func faviconDatabaseLookup() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-favicon-db-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rows: [(page: String, side: Int)] = [
+            ("http://plain.example.com/page", 11), ("https://ported.example.com:8443/", 12), ("https://bare.example.com/", 13),
+            ("https://www.prefixed.example.com/", 14), ("https://mail.example.com/", 15), ("https://look.example.com.evil.test/", 17),
+            ("https://wide.example.com/a", 16), ("https://wide.example.com/b", 32),
+        ]
+        let hosts = ["plain.example.com", "ported.example.com", "www.bare.example.com", "prefixed.example.com", "drive.example.com",
+                     "look.example.com", "wide.example.com"]
+        let chromium = root.appendingPathComponent("Chromium", isDirectory: true), firefox = root.appendingPathComponent("Firefox", isDirectory: true)
+        makeChromiumUserData(chromium, bookmarks: [], icons: rows)
+        makeFirefoxData(firefox, bookmarks: [], icons: rows)
+        for (name, found) in [("Chromium", ChromiumImporter.favicons(userData: chromium, hosts: hosts)), ("Firefox", FirefoxImporter.favicons(root: firefox, hosts: hosts))] {
+            let side = found.mapValues { NSBitmapImageRep(data: $0)?.pixelsWide ?? 0 }
+            expect(side["plain.example.com"] == 11, "\(name): a page loaded over http gives its host an icon")
+            expect(side["ported.example.com"] == 12, "\(name): so does a page on a port")
+            expect(side["www.bare.example.com"] == 13, "\(name): a www. host finds the bare host's icon")
+            expect(side["prefixed.example.com"] == 14, "\(name): a bare host finds the www. host's icon")
+            expect(side["drive.example.com"] == nil, "\(name): a host never takes a sibling subdomain's icon")
+            expect(side["look.example.com"] == nil, "\(name): nor that of a longer host that starts with it")
+            expect(side["wide.example.com"] == 32, "\(name): the widest icon of the host wins")
+        }
+    }
+
+    /// Chrome-family and Firefox imports bring each tab's icon from the profile's favicon database.
+    private static func chromiumAndFirefoxPlansBringIcons() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-favicon-plans-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pages = ["https://plain.example.com/", "https://drive.example.com/"], icons: [(page: String, side: Int)] = [("http://plain.example.com/page", 11)]
+        let chromium = root.appendingPathComponent("Chromium", isDirectory: true), firefox = root.appendingPathComponent("Firefox", isDirectory: true)
+        makeChromiumUserData(chromium, bookmarks: pages, icons: icons)
+        makeFirefoxData(firefox, bookmarks: pages, icons: icons)
+        let plans = [("Chrome", try ChromiumImporter.plan(browser: "Chrome", userData: chromium)), ("Firefox", try FirefoxImporter.plan(browser: "Firefox", root: firefox))]
+        for (name, plan) in plans {
+            let items = plan.spaces.first?.pinned ?? []
+            expect(pixelsWide(items.first { $0.url == pages[0] }?.faviconPath) == 11, "\(name): a bookmark comes with its host's icon from the profile's database")
+            expect(items.count == 2 && items[1].faviconPath == nil, "\(name): a bookmark on a host the database has no icon for comes without one")
+        }
+        // The import preview caches icons by path: another browser's plan must not overwrite them.
+        let other = root.appendingPathComponent("Other", isDirectory: true)
+        makeChromiumUserData(other, bookmarks: pages, icons: [("https://plain.example.com/", 12)])
+        let second = try ChromiumImporter.plan(browser: "Brave", userData: other)
+        expect(pixelsWide(second.spaces.first?.pinned.first?.faviconPath) == 12 && pixelsWide(plans[0].1.spaces.first?.pinned.first?.faviconPath) == 11,
+               "a second browser's plan leaves the first one's icon files alone")
+    }
+
+    /// The import window reads the picked browser's plan on a background thread (#748 made it slow
+    /// with icons): each fixture browser's plan reads there without the main thread, as it does on main.
+    private static func plansReadOffTheMainThread() {
+        func lines(_ plan: ImportPlan?) -> [String] {
+            func icon(_ path: String?) -> String { path.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }?.base64EncodedString() ?? "-" }
+            func items(_ list: [ImportedItem]) -> [String] {
+                list.flatMap { ["\($0.customTitle ?? $0.pageTitle) \($0.url ?? "folder") \(icon($0.faviconPath))"] + items($0.children) }
+            }
+            guard let plan else { return [] }
+            return items(plan.favorites) + plan.spaces.flatMap { ["space \($0.title)"] + items($0.favorites + $0.pinned + $0.today) }
+                + plan.archive.map { "archive \($0.url) \(icon($0.faviconPath))" }
+        }
+        for source in ImportSource.allCases where [.arc, .dia, .yab, .ardia, .phi].contains(source.kind) {
+            let onMain = lines(try? source.plan())
+            var offMain: [String] = []
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .userInitiated).async { offMain = lines(try? source.plan()); done.signal() }
+            expect(done.wait(timeout: .now() + 60) == .success, "\(source.name): its plan reads on a background thread without waiting for the main thread")
+            expect(!onMain.isEmpty && offMain == onMain, "\(source.name): read on a background thread, the plan is the one read on main")
+            expect(source.kind != .arc || offMain.contains { !$0.hasSuffix(" -") && !$0.hasPrefix("space ") }, "Arc's plan read there brings its icons")
+        }
+    }
+
+    /// Picking a browser reads its plan through ImportPlanLoader: off the main thread, and a read for
+    /// an earlier pick never lands after a later one, slow archive or not.
+    @MainActor
+    private static func planLoaderReadsOffMainAndKeepsTheLastPick() {
+        let loader = ImportPlanLoader()
+        var delivered: [String] = []
+        func record(_ result: Result<ImportPlan, Error>) { delivered.append((try? result.get().source) ?? "error") }
+        func spin(until done: () -> Bool) {
+            let deadline = Date().addingTimeInterval(10)
+            while !done() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        /// A read that waits for `gate`.
+        func slowRead(_ gate: DispatchSemaphore) -> @Sendable () throws -> ImportPlan {
+            { gate.wait(); return ImportPlan(source: "slow") }
+        }
+        /// Spins until `load`'s task has delivered or dropped its result.
+        func finish(_ load: Task<Void, Never>) {
+            var finished = false
+            Task { @MainActor in await load.value; finished = true }
+            spin { finished }
+            expect(finished, "the earlier pick's read finishes")
+        }
+
+        loader.load({ ImportPlan(source: Thread.isMainThread ? "main thread" : "background") }, done: record)
+        spin { !delivered.isEmpty }
+        expect(delivered == ["background"], "the plan is read off the main thread")
+
+        delivered = []
+        loader.load({ throw CocoaError(.fileReadNoPermission) }, done: record)
+        spin { !delivered.isEmpty }
+        expect(delivered == ["error"], "a read that fails hands over its error")
+
+        delivered = []
+        var gate = DispatchSemaphore(value: 0)
+        var slow = loader.load(slowRead(gate), done: record)
+        loader.load({ ImportPlan(source: "fast") }, done: record)
+        spin { !delivered.isEmpty }
+        gate.signal()
+        finish(slow)
+        expect(delivered == ["fast"], "a slow read for an earlier pick is dropped once a later pick's plan is in")
+
+        delivered = []
+        gate = DispatchSemaphore(value: 0)
+        slow = loader.load(slowRead(gate), done: record)
+        loader.cancel()
+        gate.signal()
+        finish(slow)
+        expect(delivered.isEmpty, "a later pick that reads nothing (Full Disk Access, Safari's export) drops the read in flight")
+    }
+
+    /// A Chrome-family "User Data" folder whose Default profile has `bookmarks` on its bar and an icon
+    /// `side` px wide in its Favicons for each page of `icons`.
+    private static func makeChromiumUserData(_ userData: URL, bookmarks: [String], icons: [(page: String, side: Int)]) {
+        let profile = userData.appendingPathComponent("Default", isDirectory: true)
+        try? FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        try? Data("{}".utf8).write(to: profile.appendingPathComponent("Preferences"))
+        let bar = bookmarks.enumerated().map { ["type": "url", "name": "Mark \($0.offset)", "url": $0.element] }
+        try? JSONSerialization.data(withJSONObject: ["roots": ["bookmark_bar": ["type": "folder", "children": bar]]])
+            .write(to: profile.appendingPathComponent("Bookmarks"))
+        var sql = """
+            CREATE TABLE icon_mapping(id INTEGER PRIMARY KEY, page_url LONGVARCHAR NOT NULL, icon_id INTEGER, page_url_type INTEGER DEFAULT 0);
+            CREATE INDEX icon_mapping_page_url_idx ON icon_mapping(page_url);
+            CREATE TABLE favicons(id INTEGER PRIMARY KEY, url LONGVARCHAR NOT NULL, icon_type INTEGER DEFAULT 1);
+            CREATE TABLE favicon_bitmaps(id INTEGER PRIMARY KEY, icon_id INTEGER NOT NULL, last_updated INTEGER DEFAULT 0, image_data BLOB,
+              width INTEGER DEFAULT 0, height INTEGER DEFAULT 0, last_requested INTEGER DEFAULT 0);
+            """
+        for (i, icon) in icons.enumerated() {
+            sql += """
+                INSERT INTO favicons VALUES (\(i + 1), 'https://icons.test/\(i + 1).png', 1);
+                INSERT INTO icon_mapping(page_url, icon_id) VALUES ('\(icon.page)', \(i + 1));
+                INSERT INTO favicon_bitmaps(icon_id, image_data, width, height) VALUES (\(i + 1), \(squarePNG(icon.side)), \(icon.side), \(icon.side));
+                """
+        }
+        writeSQLite(profile.appendingPathComponent("Favicons"), sql)
+    }
+
+    /// A Firefox data folder whose default profile has `bookmarks` on its toolbar and an icon `side`
+    /// px wide in its favicons.sqlite for each page of `icons`.
+    private static func makeFirefoxData(_ root: URL, bookmarks: [String], icons: [(page: String, side: Int)]) {
+        let profile = root.appendingPathComponent("Profiles/test.default", isDirectory: true)
+        try? FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        try? Data("[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/test.default\nDefault=1\n".utf8).write(to: root.appendingPathComponent("profiles.ini"))
+        var places = """
+            CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR);
+            CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER, position INTEGER,
+              title LONGVARCHAR, dateAdded INTEGER, guid TEXT);
+            INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 0, 0, '', 0, 'root________'), (2, 2, NULL, 1, 0, 'toolbar', 0, 'toolbar_____');
+            """
+        for (i, url) in bookmarks.enumerated() {
+            places += "INSERT INTO moz_places VALUES (\(i + 1), '\(url)', ''); INSERT INTO moz_bookmarks VALUES (\(i + 3), 1, \(i + 1), 2, \(i), 'Mark \(i)', 0, 'mark\(i)');"
+        }
+        writeSQLite(profile.appendingPathComponent("places.sqlite"), places)
+        var sql = """
+            CREATE TABLE moz_icons (id INTEGER PRIMARY KEY, icon_url TEXT NOT NULL, fixed_icon_url_hash INTEGER NOT NULL, width INTEGER NOT NULL DEFAULT 0,
+              root INTEGER NOT NULL DEFAULT 0, color INTEGER, expire_ms INTEGER NOT NULL DEFAULT 0, data BLOB);
+            CREATE TABLE moz_pages_w_icons (id INTEGER PRIMARY KEY, page_url TEXT NOT NULL, page_url_hash INTEGER NOT NULL);
+            CREATE TABLE moz_icons_to_pages (page_id INTEGER NOT NULL, icon_id INTEGER NOT NULL, expire_ms INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (page_id, icon_id)) WITHOUT ROWID;
+            """
+        for (i, icon) in icons.enumerated() {
+            sql += """
+                INSERT INTO moz_icons(id, icon_url, fixed_icon_url_hash, width, data) VALUES (\(i + 1), 'https://icons.test/\(i + 1).png', \(i + 1), \(icon.side), \(squarePNG(icon.side)));
+                INSERT INTO moz_pages_w_icons VALUES (\(i + 1), '\(icon.page)', \(i + 1));
+                INSERT INTO moz_icons_to_pages(page_id, icon_id) VALUES (\(i + 1), \(i + 1));
+                """
+        }
+        writeSQLite(profile.appendingPathComponent("favicons.sqlite"), sql)
+    }
+
+    /// A square PNG `side` px wide, as an SQL blob literal.
+    private static func squarePNG(_ side: Int) -> String {
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { r in NSColor.orange.setFill(); r.fill(); return true }
+        return "X'" + (FaviconCache.png(image) ?? Data()).map { String(format: "%02x", $0) }.joined() + "'"
+    }
+
+    private static func writeSQLite(_ file: URL, _ sql: String) {
+        var db: OpaquePointer?
+        sqlite3_open(file.path, &db)
+        defer { sqlite3_close(db) }
+        expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK, "the test's database \(file.lastPathComponent) is written")
+    }
+
+    /// The icon a key has in Cra's Favicons folder.
+    @MainActor
+    private static func savedFavicon(_ key: String?) -> Data? {
+        key.flatMap { try? Data(contentsOf: AppPaths.favicons.appendingPathComponent(FaviconCache.fileName($0))) }
+    }
+
+    /// How many pixels wide the image in a file is.
+    private static func pixelsWide(_ path: String?) -> Int? {
+        path.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }.flatMap(NSBitmapImageRep.init(data:))?.pixelsWide
+    }
+
+    // promise: #742
+    /// Yab import keeps a tab whatever its address, and a kept tab pinned with a page that can't be
+    /// imported comes over pinned, at the page it shows. A copy of Tests/Fixtures/Yab with such tabs.
+    private static func yabKeepsAnyAddress() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("cra-yab-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: dir) }
+        try fm.copyItem(at: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Yab"), to: dir)
+        let session = dir.appendingPathComponent("session.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: session)) as! [String: Any]
+        let rows = root["tabs"] as! [[String: Any]]
+        let kept: [[String: Any]] = [
+            ["id": "k", "url": "file:///Users/me/notes.html", "title": "Notes", "kept": true],
+            ["id": "s", "url": "https://status.example.com/now", "title": "Status now", "kept": true, "home": "about:newtab", "homeTitle": "New Tab"],
+        ]
+        let open = ["javascript:void(document.title)", "chrome://settings/", "chrome://newtab/", "blob:https://news.example.com/5f1c"]
+            .enumerated().map { ["id": "o\($0.offset)", "url": $0.element, "title": $0.element] as [String: Any] }
+        root["tabs"] = rows.filter { $0["kept"] as? Bool == true || $0["pin"] != nil } + kept + rows.filter { $0["kept"] == nil && $0["pin"] == nil } + open
+        try JSONSerialization.data(withJSONObject: root).write(to: session)
+
+        let personal = try YabImporter.plan(supportDir: dir, pinsInEverySpace: nil).spaces[0]
+        expect(personal.pinned.compactMap(\.url).contains("file:///Users/me/notes.html"), "a kept tab on a file on disk comes over")
+        expect(personal.pinned.last?.url == "https://status.example.com/now" && personal.pinned.last?.pageTitle == "Status now",
+               "a kept tab pinned with a new tab page comes over pinned, at the page it shows and that page's title")
+        expect(personal.today.compactMap(\.url) == ["https://news.example.com/", "javascript:void(document.title)", "chrome://settings/"],
+               "today's tabs come over whatever their address; about:blank, a new tab page and blob: left out")
+    }
+
     /// Chrome-family profiles (Tests/Fixtures/Chromium/Default): the last session's open tabs,
     /// bookmarks and which extensions are turned off.
     private static func chromiumProfile() {
         let profile = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Chromium/Default")
         let tabs = ChromiumImporter.openTabs(profile: profile)
-        expect(tabs.map(\.url) == ["https://example.com/one", "https://example.com/two-b"],
-               "open tabs: the selected navigation of each, closed tabs and chrome:// pages left out, in window order")
-        expect(tabs.map(\.pageTitle) == ["One", "Two, then Ü"], "titles come from the session's UTF-16 strings")
+        expect(tabs.map(\.url) == ["https://example.com/one", "https://example.com/two-b", "file:///Users/me/notes.html",
+                                   "javascript:void(document.title)", "chrome://settings/"],
+               "open tabs: the selected navigation of each, whatever its address, in window order; closed tabs, a new tab page, about:blank and blob: left out")
+        expect(tabs.prefix(2).map(\.pageTitle) == ["One", "Two, then Ü"], "titles come from the session's UTF-16 strings")
         let marks = ChromiumImporter.bookmarks(profile: profile)
-        expect(marks.bar.map(\.pageTitle) == ["Docs", "Reading"] && marks.bar[1].children.map(\.url) == ["https://example.com/read"],
-               "the bookmarks bar keeps folders with web pages, drops empty folders and file: links")
+        expect(marks.bar.map(\.pageTitle) == ["Docs", "Reading", "Local", "Tools"] && marks.bar[1].children.map(\.url) == ["https://example.com/read"],
+               "the bookmarks bar keeps file: links and folders with something in them, drops empty folders")
+        expect(marks.bar[2].url == "file:///etc/hosts", "a file: bookmark comes over")
+        expect(marks.bar[3].children.map(\.url) == ["javascript:void(document.title)", "chrome://settings/"],
+               "a folder of a bookmarklet and a browser page comes over with both")
         expect(marks.other.map(\.url) == ["https://example.com/other"], "other and mobile bookmarks come after")
         expect(ChromiumImporter.parseSession(Data("SNSS".utf8) + Data([4, 0, 0, 0]) + Data(repeating: 1, count: 16)).isEmpty,
                "an encrypted session (version 4) gives nothing rather than garbage")
         expect(ExtensionImporter.disabledIDs(inProfile: profile).contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                && !ExtensionImporter.disabledIDs(inProfile: profile).contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                "an extension with disable_reasons is off, one in state 1 is on")
+    }
+
+    // promise: #742
+    /// Firefox (a profile made here, as Firefox writes it): bookmarks from places.sqlite and open
+    /// tabs from the session store come over whatever their address. Left out: a blank or new tab
+    /// page, a blob: and the place: queries Firefox keeps as smart bookmarks.
+    private static func firefoxImport() throws {
+        let root = try firefoxRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = try FirefoxImporter.plan(browser: "Firefox", root: root)
+        let marks = plan.spaces.first?.pinned ?? []
+        expect(marks.map(\.pageTitle) == ["News", "Notes", "Bookmarklet", "Settings", "Tools"],
+               "toolbar bookmarks come over whatever their address; place:, about:blank and blob: left out, and a folder of only place: ones")
+        expect(marks.compactMap(\.url) == ["https://example.com/news", "file:///Users/me/notes.html", "javascript:void(document.title)", "about:preferences"],
+               "each at its own address")
+        expect(marks.last?.children.compactMap(\.url) == ["javascript:alert(1)"], "a folder of a bookmarklet comes over")
+        expect(plan.spaces.first?.today.compactMap(\.url) == ["https://example.com/news", "file:///Users/me/notes.html",
+                                                              "javascript:void(document.title)", "about:preferences"],
+               "open tabs come over whatever their address; about:blank, about:newtab, about:home and blob: left out")
+    }
+
+    // promise: #742
+    /// Zen (a profile made here): tabs come over whatever their address, and a pinned tab whose
+    /// pinned page is a new tab page comes over pinned, at the page it shows.
+    private static func zenImport() throws {
+        let root = try firefoxRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = try ZenImporter.plan(root: root)
+        let home = plan.spaces.first
+        expect(home?.today.compactMap(\.url) == ["file:///Users/me/notes.html", "javascript:void(document.title)", "about:preferences"],
+               "Zen's tabs come over whatever their address; about:blank, about:newtab and blob: left out")
+        expect(home?.pinned.compactMap(\.url) == ["https://status.example.com/now"] && home?.pinned.first?.pageTitle == "Status now",
+               "a tab pinned with a new tab page comes over pinned, at the page it shows and that page's title")
+    }
+
+    // promise: #742
+    /// Safari's exported Bookmarks.html (Tests/Fixtures/Safari): bookmarks come over whatever
+    /// their address, and a folder of only blank ones is left out.
+    private static func safariImport() throws {
+        let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Safari")
+        let pinned = try SafariImporter.read(folder).plan.spaces.first?.pinned ?? []
+        expect(pinned.map(\.pageTitle) == ["News", "Notes", "Bookmarklet", "Open in Safari", "Tools"],
+               "Favorites and folders come over whatever their address; about:blank and blob: left out, and a folder of only about:blank")
+        expect(pinned.compactMap(\.url) == ["https://example.com/news", "file:///Users/me/notes.html", "javascript:void(document.title)",
+                                            "x-safari-https://example.com/"], "each at its own address")
+    }
+
+    /// A Firefox root as Firefox and Zen write it: profiles.ini, then one profile with
+    /// places.sqlite, Firefox's session store and Zen's sidebar file, each with tabs and
+    /// bookmarks at every kind of address.
+    private static func firefoxRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-firefox-\(UUID().uuidString)", isDirectory: true)
+        let profile = root.appendingPathComponent("abc.default-release", isDirectory: true)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
+        try Data("[Profile0]\nName=default-release\nIsRelative=1\nPath=abc.default-release\nDefault=1\n".utf8)
+            .write(to: root.appendingPathComponent("profiles.ini"))
+        var db: OpaquePointer?
+        sqlite3_open(profile.appendingPathComponent("places.sqlite").path, &db)
+        sqlite3_exec(db, """
+            CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT);
+            CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER, position INTEGER,
+                                        title TEXT, guid TEXT, dateAdded INTEGER);
+            INSERT INTO moz_places VALUES (1, 'https://example.com/news', 'News'), (2, 'file:///Users/me/notes.html', 'Notes'),
+                (3, 'javascript:void(document.title)', ''), (4, 'about:preferences', ''), (5, 'place:sort=8&maxResults=10', ''),
+                (6, 'about:blank', ''), (7, 'blob:https://example.com/5f1c', ''), (8, 'place:type=6', ''), (9, 'javascript:alert(1)', '');
+            INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 0, 0, '', 'root________', 0), (3, 2, NULL, 1, 0, 'toolbar', 'toolbar_____', 0),
+                (10, 1, 1, 3, 0, 'News', 'b10', 0), (11, 1, 2, 3, 1, 'Notes', 'b11', 0), (12, 1, 3, 3, 2, 'Bookmarklet', 'b12', 0),
+                (13, 1, 4, 3, 3, 'Settings', 'b13', 0), (14, 1, 5, 3, 4, 'Most Visited', 'b14', 0), (15, 1, 6, 3, 5, 'Blank', 'b15', 0),
+                (16, 1, 7, 3, 6, 'Download', 'b16', 0), (17, 2, NULL, 3, 7, 'Smart', 'b17', 0), (18, 1, 8, 17, 0, 'Recent Tags', 'b18', 0),
+                (19, 2, NULL, 3, 8, 'Tools', 'b19', 0), (20, 1, 9, 19, 0, 'Alert', 'b20', 0);
+            """, nil, nil, nil)
+        sqlite3_close(db)
+        func entry(_ url: String) -> [String: Any] { ["entries": [["url": url, "title": url]], "index": 1, "zenWorkspace": "s1"] }
+        let addresses = ["https://example.com/news", "file:///Users/me/notes.html", "javascript:void(document.title)", "about:preferences",
+                         "about:blank", "about:newtab", "about:home", "blob:https://example.com/5f1c"]
+        try mozLz4(["windows": [["tabs": addresses.map(entry)]]]).write(to: profile.appendingPathComponent("sessionstore.jsonlz4"))
+        var pinned = entry("https://status.example.com/now")
+        pinned["entries"] = [["url": "https://status.example.com/now", "title": "Status now"]]
+        pinned["pinned"] = true
+        pinned["_zenPinnedInitialState"] = ["entry": ["url": "about:newtab", "title": "New Tab"]]
+        let zenTabs = [pinned] + ["file:///Users/me/notes.html", "javascript:void(document.title)", "about:preferences",
+                                  "about:blank", "about:newtab", "blob:https://example.com/5f1c"].map(entry)
+        try mozLz4(["spaces": [["uuid": "s1", "name": "Home", "position": 0]], "tabs": zenTabs, "folders": [Any]()])
+            .write(to: profile.appendingPathComponent("zen-sessions.jsonlz4"))
+        return root
+    }
+
+    /// Firefox's mozLz4: "mozLz40\0", the size as a little-endian uint32, one raw LZ4 block.
+    private static func mozLz4(_ object: Any) throws -> Data {
+        let json = try JSONSerialization.data(withJSONObject: object)
+        var block = Data(count: json.count + json.count / 255 + 64)
+        let n = block.withUnsafeMutableBytes { out in json.withUnsafeBytes { src in
+            compression_encode_buffer(out.bindMemory(to: UInt8.self).baseAddress!, out.count,
+                                      src.bindMemory(to: UInt8.self).baseAddress!, json.count, nil, COMPRESSION_LZ4_RAW)
+        } }
+        var size = UInt32(json.count).littleEndian
+        return Data("mozLz40\0".utf8) + Data(bytes: &size, count: 4) + block.prefix(n)
     }
 
     /// A browser someone has already deleted still leaves its profile behind, and the import
@@ -434,6 +1675,36 @@ enum StoreTests {
         let missing = ImportSource(id: "brave", name: "Brave", bundleID: "app.cra.tests.not-installed", kind: .chromium,
                                    dataDir: root.deletingLastPathComponent().appendingPathComponent("cra-none-\(UUID().uuidString)"))
         expect(!missing.isAvailable && !missing.needsFullDiskAccess, "a browser never used is neither offered nor asks")
+    }
+
+    // promise: #757
+    /// The import list decides from a browser's own folder being there, never from what's inside:
+    /// reading inside Chrome's folder on first launch made macOS show "Data Access Blocked … tried
+    /// to access your data from other apps" before anything was picked (#757). A folder with
+    /// nothing readable in it is offered; reading it waits until it's picked.
+    private static func importListReadsNothingInsideABrowsersFolder() {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("cra-757-\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            try? fm.removeItem(at: root)
+        }
+        let chrome = ImportSource(id: "chrome", name: "Chrome", bundleID: "app.cra.tests.not-installed", kind: .chromium, dataDir: root)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        expect(chrome.isAvailable, "an empty Chrome folder that's there is offered: whether it holds a profile shows once it's picked")
+        try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+        expect(chrome.isAvailable, "and so is one macOS won't let Cra read")
+        let arcHome = fm.temporaryDirectory.appendingPathComponent("cra-757-arc-\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: arcHome, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: arcHome) }
+        let arc = ImportSource(id: "arc", name: "Arc", bundleID: "app.cra.tests.not-installed", kind: .arc,
+                               dataDir: arcHome.appendingPathComponent("User Data"), ownFolder: arcHome)
+        expect(arc.isAvailable, "Arc is offered from its own folder, not from StorableSidebar.json inside it")
+        let gone = ImportSource(id: "brave", name: "Brave", bundleID: "app.cra.tests.not-installed", kind: .chromium,
+                                dataDir: root.appendingPathComponent("never-made"))
+        expect(!gone.isAvailable, "a browser whose folder isn't there is listed dimmed")
     }
 
     /// Chrome signed in to a Google account keeps the bookmarks saved there in AccountBookmarks,
@@ -493,6 +1764,31 @@ enum StoreTests {
         expect(!archived(later.id), "with auto-archive off nothing is archived")
     }
 
+    /// Each pass says how many tabs it sent to the Archive, for Arc's "Auto archived N tabs" toast (X, 25 Nov 2026:
+    /// tabs archived overnight looked lost). The launch's pass counts too: after a night away or an update restart it
+    /// is the one that archives. An empty tab leaves nothing in the Archive and isn't counted.
+    @MainActor
+    private static func autoArchiveCounts() {
+        let clock = ManualScheduler()
+        let composition = AppComposition(clock: clock)
+        let store = composition.store
+        store.settings.autoArchiveEnabled = true
+        store.settings.autoArchive = .twelveHours
+        _ = store.createTab(url: "https://example.com/night-one", select: false)
+        _ = store.createTab(url: "https://example.com/night-two", select: false)
+        _ = store.createTab(url: "", select: false)
+        _ = store.createTab(url: "https://example.com/shown", select: true)
+        // Away all night: the next launch's pass archives them.
+        clock.advance(by: 13 * 3600)
+        var passes: [Int] = []
+        composition.startPeriodicWork(autoArchived: { passes.append($0) }) {}
+        expect(passes == [2], "the launch's pass counts the two pages, not the empty tab or the selected one: \(passes)")
+        _ = store.createTab(url: "https://example.com/later", select: false)
+        clock.advance(by: 12 * 3600 + AppComposition.autoArchiveInterval + 1)
+        expect(passes.last == 1, "a later pass counts its own: \(passes)")
+        expect(passes.dropFirst().dropLast().allSatisfy { $0 == 0 }, "passes that archive nothing say 0: \(passes)")
+    }
+
     // promise: #278
     /// 180 days, past Arc's 30 (#278): kept until the whole threshold has passed unused, archived
     /// by the next pass after it; the selected tab and pinned tabs never are.
@@ -514,6 +1810,40 @@ enum StoreTests {
         expect(archived(idle.id), "the next pass after 180 days archives it")
         expect(!archived(shown.id), "the selected tab is never archived")
         expect(!archived(pinned.id), "pinned tabs are never auto-archived")
+    }
+
+    // promise: #693
+    /// Each profile's own "Archive tabs after", as in Arc: a space on a Work profile set to 7 days keeps
+    /// its tabs while the Default space's go after 12 hours, and a profile set to Never keeps them all.
+    @MainActor
+    private static func profileAutoArchive() {
+        let clock = ManualScheduler()
+        let composition = AppComposition(clock: clock)
+        let store = composition.store
+        let work = store.createProfile(name: "Work")
+        let school = store.createProfile(name: "School")
+        let profiles = store.profiles.map(\.id)
+        store.settings.setAutoArchive(.after(.twelveHours), profileID: nil, otherProfiles: profiles)
+        store.settings.setAutoArchive(.after(.sevenDays), profileID: work.id, otherProfiles: profiles)
+        store.settings.setAutoArchive(.never, profileID: school.id, otherProfiles: profiles)
+        let home = store.focusedSpaceID
+        var workSpace = store.createSpace(title: "Work", emoji: "", focus: false)
+        workSpace.profileID = work.id
+        store.updateSpace(workSpace)
+        var schoolSpace = store.createSpace(title: "School", emoji: "", focus: false)
+        schoolSpace.profileID = school.id
+        store.updateSpace(schoolSpace)
+        let personal = store.createTab(url: "https://example.com/personal", in: home, select: false)
+        let job = store.createTab(url: "https://example.com/job", in: workSpace.id, select: false)
+        let homework = store.createTab(url: "https://example.com/homework", in: schoolSpace.id, select: false)
+        composition.startPeriodicWork {}
+        func archived(_ id: UUID) -> Bool { store.item(id) == nil }
+        clock.advance(by: 12 * 3600 + AppComposition.autoArchiveInterval + 1)
+        expect(archived(personal.id), "the Default space's tab goes after Default's 12 hours")
+        expect(!archived(job.id), "the Work space's tab stays: Work archives after 7 days")
+        clock.advance(by: 7 * 86400)
+        expect(archived(job.id), "after 7 days the Work tab goes too")
+        expect(!archived(homework.id), "School's Never keeps its tab")
     }
 
     // promise: #136
@@ -771,6 +2101,77 @@ enum StoreTests {
         expect(store.integrityProblems().isEmpty, "the cleanup keeps the sidebar sound")
     }
 
+    // promise: #697
+    /// A pull request merged or closed while its tab sits on one of its own pages (Files changed, a
+    /// comment link, owner/repo in another case, a query) leaves the folder after the grace like an
+    /// unopened one. Before #697 only a tab on exactly the listed address could go, so a pull
+    /// request you'd looked at stayed in the folder for good. A tab on another page stays (Arc).
+    @MainActor
+    private static func closedPullRequestsLeaveFromTheirOwnPages() {
+        let clock = ManualScheduler()
+        let store = AppComposition(clock: clock).store
+        guard let folder = store.createLiveFolder(.github, inSpace: store.focusedSpaceID) else { return expect(false, "a live folder is made") }
+        func pr(_ number: Int) -> LiveFolderPluginItem {
+            let url = "https://github.com/team/app/pull/\(number)"
+            return LiveFolderPluginItem(id: url, url: url, title: "PR \(number)", group: "team/app")
+        }
+        let open = pr(1), files = pr(5), comment = pr(6), query = pr(7), other = pr(8), longer = pr(9)
+        store.applyPluginResults(.init(items: [open, files, comment, query, other, longer]), to: folder.id)
+        func tab(_ item: LiveFolderPluginItem) -> UUID? { store.children(of: folder.id).first { $0.tab?.liveItemURL == item.url }?.id }
+        guard let filesTab = tab(files), let commentTab = tab(comment), let queryTab = tab(query),
+              let otherTab = tab(other), let longerTab = tab(longer), let openTab = tab(open) else {
+            return expect(false, "every pull request has a tab")
+        }
+        store.updateTab(filesTab, url: files.url + "/files", title: "Files")
+        store.updateTab(commentTab, url: "https://github.com/Team/App/pull/6#issuecomment-42", title: "Comment")
+        store.updateTab(queryTab, url: query.url + "?w=1", title: "Query")
+        store.updateTab(otherTab, url: "https://example.test/reading", title: "Reading")
+        store.updateTab(longerTab, url: "https://github.com/team/app/pull/90", title: "Another pull request")
+        store.prefs.windows[0].selectedTabPerSpace[store.focusedSpaceID] = openTab
+
+        clock.advance(by: 600)
+        store.applyPluginResults(.init(items: [open]), to: folder.id)
+        clock.advance(by: 120)
+        store.expireLiveItems(olderThan: 120)
+        let left = Set(store.children(of: folder.id).compactMap(\.tab?.liveItemURL))
+        expect(left == [open.url, other.url, longer.url],
+               "merged pull requests on their own pages go; one on another page or another pull request stays: \(left)")
+        expect(store.item(longerTab)?.tab?.savedTitle == "Another pull request", "pull request 90's page keeps its own title, not pull request 9's")
+        expect(store.item(filesTab) == nil || store.item(filesTab)?.tab?.savedTitle == "PR 5", "a pull request's own pages keep its title")
+        expect(store.integrityProblems().isEmpty, "the cleanup keeps the sidebar sound")
+    }
+
+    // promise: #697
+    /// The other half of #697 stays as Arc has it (its hiddenItems): a pull request closed out of the
+    /// folder by hand stays out on every refresh, and Reopen Closed Tab (⇧⌘T) puts it back.
+    @MainActor
+    private static func closedPullRequestsStayOutAcrossRefreshes() {
+        let clock = ManualScheduler()
+        let store = AppComposition(clock: clock).store
+        guard let folder = store.createLiveFolder(.github, inSpace: store.focusedSpaceID) else { return expect(false, "a live folder is made") }
+        let items = [1, 2].map { n -> LiveFolderPluginItem in
+            let url = "https://github.com/team/app/pull/\(n)"
+            return LiveFolderPluginItem(id: url, url: url, title: "PR \(n)", group: "team/app")
+        }
+        store.applyPluginResults(.init(items: items), to: folder.id)
+        guard let closed = store.children(of: folder.id).first(where: { $0.tab?.liveItemURL == items[1].url }) else {
+            return expect(false, "the pull request has a tab")
+        }
+        store.archiveTab(closed.id, reason: .manual)
+        for _ in 0..<3 {
+            clock.advance(by: 600)
+            store.applyPluginResults(.init(items: items), to: folder.id)
+            store.expireLiveItems(olderThan: 120)
+        }
+        expect(store.children(of: folder.id).compactMap(\.tab?.liveItemURL) == [items[0].url], "refreshes leave the closed pull request out")
+        if let archived = store.archive.first(where: { $0.item.tab?.liveItemURL == items[1].url }) { store.restoreArchived(archived.id, select: false) }
+        clock.advance(by: 600)
+        store.applyPluginResults(.init(items: items), to: folder.id)
+        expect(Set(store.children(of: folder.id).compactMap(\.tab?.liveItemURL)) == Set(items.map(\.url)),
+               "Reopen Closed Tab puts it back, and the next refresh keeps it")
+        expect(store.item(folder.id)?.liveFolder?.hiddenItems.isEmpty == true, "nothing is hidden once it's back")
+    }
+
     @MainActor
     private static func liveFolderExpiryKeepsNavigatedPages() {
         let clock = ManualScheduler()
@@ -991,6 +2392,58 @@ enum StoreTests {
         expect(suggested(nil) == ["https://example.com/home", "https://example.com/both"], "Default's bar: \(suggested(nil))")
         expect(store.history["https://example.com/both"]?.profiles == ["default", work.id.uuidString], "each profile once, in visit order")
         expect(store.history["https://example.com/both"]?.visitCount == 3, "visits still count across profiles")
+    }
+
+    // promise: #729
+    /// history.json from before #609 has no profiles, so every profile's ⌘T suggested it. At launch each
+    /// such entry takes the profiles whose Chromium History has its page: Work's page is suggested on
+    /// Work only, Default's on Default only; one no History has stays on every profile. A History that
+    /// can't be read changes nothing.
+    @MainActor
+    private static func historyFromBeforeProfilesTakesThemFromChromium() {
+        func old(_ url: String) -> HistoryEntry {
+            HistoryEntry(url: url, title: "Old", lastVisit: Date(timeIntervalSince1970: 1_700_000_000), visitCount: 2)
+        }
+        let urls = ["https://example.com/work-only", "https://example.com/home-only", "https://example.com/expired"]
+        JSONStore<[HistoryEntry]>("history.json").saveNow(urls.map(old))
+        let store = AppComposition(clock: ManualScheduler()).store
+        let work = store.createProfile(name: "Work")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-chromium-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func history(_ folder: String, _ pages: [String]) {
+            let dir = root.appendingPathComponent(folder, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var db: OpaquePointer?
+            sqlite3_open(dir.appendingPathComponent("History").path, &db)
+            sqlite3_exec(db, "CREATE TABLE urls (id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR)", nil, nil, nil)
+            for p in pages { sqlite3_exec(db, "INSERT INTO urls (url, title) VALUES ('\(p)', '')", nil, nil, nil) }
+            sqlite3_close(db)
+        }
+        func attribute() {
+            var finished = false
+            store.attributeHistoryProfiles(chromium: root) { finished = true }
+            let deadline = Date().addingTimeInterval(10)
+            while !finished && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            expect(finished, "the attribution finishes")
+        }
+        func suggested(_ profile: UUID?) -> Set<String> {
+            Set(store.history.values.filter { urls.contains($0.url) && CommandBarProfileScope.suggests($0, on: profile) }.map(\.url))
+        }
+        expect(urls.allSatisfy { store.history[$0]?.profiles == nil }, "entries from before #609 load with no profile")
+
+        // Work's History is there but isn't a Chromium History: nothing changes.
+        try? FileManager.default.createDirectory(at: root.appendingPathComponent(work.directoryName), withIntermediateDirectories: true)
+        try? Data("not a database".utf8).write(to: root.appendingPathComponent(work.directoryName).appendingPathComponent("History"))
+        history("Default", ["https://example.com/home-only"])
+        attribute()
+        expect(urls.allSatisfy { store.history[$0]?.profiles == nil }, "an unreadable History changes nothing")
+
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(work.directoryName))
+        history(work.directoryName, ["https://example.com/work-only", "https://example.com/other"])
+        attribute()
+        expect(suggested(work.id) == ["https://example.com/work-only", "https://example.com/expired"], "Work's bar: \(suggested(work.id))")
+        expect(suggested(nil) == ["https://example.com/home-only", "https://example.com/expired"], "Default's bar: \(suggested(nil))")
+        expect(store.history["https://example.com/work-only"]?.visitCount == 2, "the entry keeps its visits")
     }
 
     /// A file that can't be read or written says so (a fault) instead of failing silently.
@@ -1264,6 +2717,37 @@ enum StoreTests {
         for id in ids { store.deleteSpace(id) }
     }
 
+    // promise: #749
+    /// A StorableSidebar.json can hold a second, older spaces container ahead of the real one: one
+    /// untitled space whose only container is an empty Today (the reporter's file, with a
+    /// `littleBrowser` container first). The import takes the container that holds the spaces' items,
+    /// not the first with a `spaces` key, which brought over one empty "Space" and none of the
+    /// real spaces (#749).
+    @MainActor
+    private static func arcStubContainerBeforeTheSpaces() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        var root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let stub: [String: Any] = [
+            "spaces": ["STUB-SPACE", ["id": "STUB-SPACE", "profile": ["default": [:]], "customInfo": [:],
+                                      "containerIDs": ["unpinned", "STUB-TODAY"],
+                                      "newContainerIDs": [["unpinned": ["_0": ["shared": [:]]]], "STUB-TODAY"]] as [String: Any]],
+            "items": ["STUB-TODAY", ["id": "STUB-TODAY", "title": NSNull(), "parentID": NSNull(), "childrenIds": [],
+                                     "data": ["itemContainer": ["containerType": ["spaceItems": ["_0": "STUB-SPACE"]]]]] as [String: Any]],
+            "topAppsContainerIDs": [],
+        ]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        containers.insert(stub, at: main)
+        containers.insert(["littleBrowser": [:]], at: 0)
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let plan = try ArcImporter.plan(sidebar: JSONSerialization.data(withJSONObject: root))
+        let titles = plan.spaces.map(\.title)
+        expect(titles == ["Home", "Work"], "the spaces come from the container holding them, not the stub ahead of it (#749: \(titles))")
+        expect(plan.spaces.contains { !$0.pinned.isEmpty }, "the real spaces bring their pinned tabs (#749)")
+    }
+
     // promise: #30
     /// Arc spaces without a `windowTheme` (both in the made-up profile) import with one fixed
     /// default, not the next preset each, which shifted every later space's colour (#30).
@@ -1497,6 +2981,78 @@ enum StoreTests {
         store.setFavoritesShared(false)
     }
 
+    // promise: #806
+    /// ⌘Z after Remove Favorite (#806, asked for on X): the favorite goes back where it was in the
+    /// favorites, shared or a space's own, unless something closed since comes back first.
+    @MainActor
+    private static func removedFavoriteComesBackOnUndo() {
+        let clock = ManualScheduler()
+        let store = AppComposition(clock: clock).store
+        let sid = store.createSpace(title: "Undo Favorites", emoji: "↩️").id
+        let list = store.space(sid)!.favoritesContainerID
+        func favorites() -> [UUID] { store.children(of: list).map(\.id) }
+        func favorite(_ url: String) -> UUID {
+            let t = store.createTab(url: url, in: sid, select: false)
+            store.addToFavorites(t.id, in: sid)
+            return t.id
+        }
+        let a = favorite("https://example.com/undo-a"), b = favorite("https://example.com/undo-b"), c = favorite("https://example.com/undo-c")
+        let order = favorites()
+        store.setTileColor("#FF0000", for: [b])
+        store.selectTab(b)
+        let w = store.window(nil).id
+
+        store.removeFavorite(b)
+        expect(store.item(b) == nil && store.archive.first?.id == b && store.selectedTabID(window: w) != b,
+               "Remove Favorite on a space's own favorite archives it")
+        expect(store.undoRemoveFavorite(in: w), "⌘Z undoes it")
+        expect(favorites() == order && store.item(b)?.tab?.tileColor == "#FF0000" && !store.archive.contains { $0.id == b }
+               && store.selectedTabID(window: w) == b && store.integrityProblems().isEmpty,
+               "the favorite is back in its place, with its colour, out of the archive, shown again")
+        expect(!store.undoRemoveFavorite(in: w), "once")
+
+        // Arc's undo is a stack: a tab closed after the removal comes back first, then the favorite.
+        store.removeFavorite(a)
+        clock.advance(by: 1)
+        let today = store.createTab(url: "https://example.com/undo-today", in: sid, select: false)
+        store.archiveTab(today.id, reason: .manual)
+        expect(!store.undoRemoveFavorite(in: w), "a tab closed since comes first")
+        expect(store.reopenLastClosed(in: w) == .archived(today.id), "⇧⌘T's reopen takes it")
+        expect(store.undoRemoveFavorite(in: w) && favorites() == order, "then ⌘Z brings the favorite back")
+
+        // The Library brought it back first: nothing left to undo.
+        store.removeFavorite(c)
+        _ = store.restoreArchived(c)
+        expect(!store.undoRemoveFavorite(in: w), "a favorite the Library restored isn't put back twice")
+        store.removeFromArchive(c)
+        store.moveItem(c, to: list, index: nil)
+
+        // Share Favorites: Remove Favorite deletes it, and ⌘Z still brings it back.
+        store.setFavoritesShared(true)
+        let shared = store.space(sid)!.favoritesContainerID
+        let sharedOrder = store.children(of: shared).map(\.id)
+        let x = sharedOrder.first!
+        store.removeFavorite(x)
+        expect(store.item(x) == nil && !store.archive.contains { $0.id == x }, "a shared favorite is deleted, unarchived (Arc)")
+        expect(store.undoRemoveFavorite(in: w) && store.children(of: shared).map(\.id) == sharedOrder && store.integrityProblems().isEmpty,
+               "⌘Z puts a shared favorite back in its place")
+
+        // A split favorite comes back whole.
+        if let split = store.createSplit(with: [sharedOrder[1], sharedOrder[2]], inPlace: true) {
+            let splitOrder = store.children(of: shared).map(\.id)
+            let panes = store.children(of: split.id).map(\.id)
+            store.removeFavorite(panes[0])
+            expect(store.item(split.id) == nil && panes.allSatisfy { store.item($0) == nil }, "Remove Favorite on a shared split deletes it")
+            expect(store.undoRemoveFavorite(in: w) && store.children(of: shared).map(\.id) == splitOrder
+                   && store.children(of: split.id).map(\.id) == panes && store.integrityProblems().isEmpty,
+                   "⌘Z puts the split back with its panes")
+        } else {
+            expect(false, "two favorites make a split")
+        }
+        store.setFavoritesShared(false)
+        store.deleteSpace(sid)
+    }
+
     // promise: #154
     /// Settings ▸ Tabs ▸ Share Favorites (#154): Arc's one favorites list per profile.
     @MainActor
@@ -1607,6 +3163,62 @@ enum StoreTests {
                "a tab in a space reads back its space's profile and folder (#172)")
         store.deleteSpace(pathSpace)
         store.deleteProfile(paths.id)
+    }
+
+    // promise: #843
+    /// Selecting a shared favorite with an explicit origin space (Picture in Picture's Back to Tab,
+    /// #843) focuses that space instead of staying in the current space or falling back to the
+    /// first space in sidebar order, while falling back cleanly if the space no longer holds it.
+    @MainActor
+    private static func selectSharedFavoriteInSpace() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let home = store.focusedSpaceID
+        for s in store.orderedSpaces where s.id != home { store.deleteSpace(s.id) }
+        store.setProfile(nil, forSpace: home)
+        let entertainment = store.createSpace(title: "Entertainment", emoji: "🎬", focus: false).id
+        let workProfile = store.createProfile(name: "PiP Work")
+        let work = store.createSpace(title: "Work", emoji: "💼", focus: false).id
+        store.setProfile(workProfile.id, forSpace: work)
+        store.setFavoritesShared(true)
+
+        let video = store.createTab(url: "https://example.com/pip-video", in: entertainment, select: false).id
+        store.addToFavorites(video, in: entertainment)
+
+        // Baseline: without an origin space, selecting a shared favorite from another profile's
+        // space lands on Home (the first space in sidebar order that shares it).
+        store.focusSpace(work)
+        store.selectTab(video)
+        expect(store.focusedSpaceID == home && store.selectedTabID == video,
+               "without an origin space, a shared favorite falls back to the first space that shares it")
+
+        // From a space on a different profile: with `in: entertainment`, it returns to Entertainment.
+        store.focusSpace(work)
+        store.selectTab(video, in: entertainment)
+        expect(store.focusedSpaceID == entertainment && store.selectedTabID == video,
+               "selecting a shared favorite with its origin space returns there from another profile's space")
+
+        // From another space on the same profile (Home also shares the favorite): returns to Entertainment.
+        store.focusSpace(home)
+        store.selectTab(video, in: entertainment)
+        expect(store.focusedSpaceID == entertainment && store.selectedTabID == video,
+               "selecting a shared favorite with its origin space returns there even when the current space shares it")
+
+        // If the origin space no longer lists the favorite (different profile or deleted), fall back cleanly.
+        store.focusSpace(work)
+        store.selectTab(video, in: work)
+        expect(store.focusedSpaceID == home && store.selectedTabID == video,
+               "a space that no longer shares the favorite falls back to the default space lookup")
+
+        store.deleteSpace(entertainment)
+        store.focusSpace(work)
+        store.selectTab(video, in: entertainment)
+        expect(store.focusedSpaceID == home && store.selectedTabID == video,
+               "a deleted origin space falls back cleanly instead of focusing a missing space")
+
+        store.removeFromFavorites(video)
+        store.setFavoritesShared(false)
+        store.deleteSpace(work)
+        store.deleteProfile(workProfile.id)
     }
 
     // promise: #86
@@ -2711,6 +4323,10 @@ enum StoreTests {
         syncLeavesAMixToItsWriterOnANewMac()
         syncKeepsAClosedTabClosed()
         syncKeepsAClosedTabClosedAfterTwoWritesThere()
+        syncKeepsASettingChangedBeforeTheOtherMacWrote()
+        syncKeepsATabSeenOnTheOtherMac()
+        syncKeepsATabSeenHereThatTheOtherMacArchivedFirst()
+        syncEasels()
     }
 
     /// A tab closed on one Mac came back (reported by a user, 13 Nov 2026). The other Mac still
@@ -2808,6 +4424,158 @@ enum StoreTests {
         clockB.advance(by: 60)
         syncB.poll()
         expect(b.item(doomed.id) == nil && b.item(opened.id) != nil, "the close reaches the second Mac and its tab stays")
+        syncA.disable(); syncB.disable()
+    }
+
+    /// A setting changed on one Mac was lost when the other Mac, before iCloud brought it the change, wrote its bundle
+    /// for a change of its own: the bundle's settings replaced this Mac's whole, while its sidebar was merged (X, Chris
+    /// Coyier, 25 Nov 2026: "Archive tabs after" Never on one Mac, 12 hours on the other). Settings are merged field by
+    /// field against the bundle both Macs had, as the sidebar is.
+    @MainActor
+    private static func syncKeepsASettingChangedBeforeTheOtherMacWrote() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-settings-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let a = SidebarStore(clock: clockA), b = SidebarStore(clock: clockB)
+        a.settings.autoArchiveEnabled = true
+        a.settings.autoArchive = .twelveHours
+        a.settings.warnBeforeQuitting = false
+        let tab = a.createTab(url: "https://example.com/kept", title: "Kept")
+        let syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio")
+        expect(syncA.enable(folder: folder) == .synced, "the first Mac writes its bundle")
+        let syncB = SettingsSyncService(store: b, clock: clockB, device: "MacBook", deviceID: "macbook")
+        guard case .bundleFound = syncB.enable(folder: folder) else { return expect(false, "the second Mac is asked once") }
+        syncB.useRemote()
+        expect(b.settings.autoArchive(profileID: nil) == .after(.twelveHours), "both Macs start on 12 hours")
+
+        let bundle = folder.appendingPathComponent(SettingsSync.folderName)
+        let names = [SettingsSync.manifestName] + SettingsSync.fileNames
+        let before = Dictionary(uniqueKeysWithValues: names.map { ($0, try? Data(contentsOf: bundle.appendingPathComponent($0))) })
+        // The first Mac turns auto-archive off and writes; iCloud hasn't brought it to the second Mac yet.
+        clockA.advance(by: 10); clockB.advance(by: 10)
+        a.settings.setAutoArchive(.never, profileID: nil, otherProfiles: [])
+        syncA.poll()
+        for name in names { try? before[name]??.write(to: bundle.appendingPathComponent(name)) }
+        // Meanwhile the second Mac renames a tab and changes a setting of its own, and writes.
+        clockB.advance(by: 5)
+        b.updateTab(tab.id, title: "Kept, renamed")
+        b.settings.warnBeforeQuitting = true
+        syncB.poll()
+
+        clockA.advance(by: 60)
+        syncA.poll()
+        expect(a.settings.autoArchive(profileID: nil) == .never, "the first Mac keeps Never when the second Mac's bundle arrives")
+        expect(a.settings.warnBeforeQuitting, "and takes the setting the second Mac changed")
+        expect(a.item(tab.id)?.displayTitle == "Kept, renamed", "and its sidebar change")
+        clockB.advance(by: 60)
+        syncB.poll()
+        expect(b.settings.autoArchive(profileID: nil) == .never, "Never reaches the second Mac")
+        expect(b.settings.warnBeforeQuitting, "which keeps its own change")
+        syncA.disable(); syncB.disable()
+    }
+
+    /// A tab looked at on one Mac is in use: the other Mac's archive pass doesn't take it, also when that pass ran before
+    /// the other Mac's bundle arrived (at launch, after waking, iCloud still downloading). Its sidebar knew only the older
+    /// look, archived the tab, and the close went back to the first Mac, where it was gone and in neither Archive there.
+    @MainActor
+    private static func syncKeepsATabSeenOnTheOtherMac() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-seen-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let a = SidebarStore(clock: clockA), b = SidebarStore(clock: clockB)
+        a.settings.autoArchiveEnabled = true
+        a.settings.autoArchive = .twelveHours
+        let shown = a.createTab(url: "https://example.com/shown", title: "Shown", select: true)
+        let seenAfterLook = a.createTab(url: "https://example.com/seen-after-look", title: "Seen, B looks first", select: false)
+        let seenBeforeLook = a.createTab(url: "https://example.com/seen-before-look", title: "Seen, B archives first", select: false)
+        let idle = a.createTab(url: "https://example.com/idle", title: "Idle on both", select: false)
+        let syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio")
+        expect(syncA.enable(folder: folder) == .synced, "the first Mac writes its bundle")
+        let syncB = SettingsSyncService(store: b, clock: clockB, device: "MacBook", deviceID: "macbook")
+        guard case .bundleFound = syncB.enable(folder: folder) else { return expect(false, "the second Mac is asked once") }
+        syncB.useRemote()
+        b.selectTab(shown.id)
+
+        // Eleven hours on, both tabs are looked at on the first Mac, which writes.
+        clockA.advance(by: 11 * 3600); clockB.advance(by: 11 * 3600)
+        a.selectTab(seenAfterLook.id)
+        a.selectTab(seenBeforeLook.id)
+        a.selectTab(shown.id)
+        syncA.poll()
+
+        // Two hours later on the second Mac: one pass after its look, as every 30 minutes.
+        clockA.advance(by: 2 * 3600); clockB.advance(by: 2 * 3600)
+        syncB.poll()
+        b.runAutoArchive()
+        expect(b.item(seenAfterLook.id) != nil, "a pass after the look keeps a tab looked at on the other Mac")
+        expect(b.item(idle.id) == nil, "a tab idle on both Macs is archived")
+
+        // The race: a pass before the look, as at launch or waking, then the look and the other Mac's.
+        a.selectTab(seenBeforeLook.id)
+        a.selectTab(shown.id)
+        syncA.poll()
+        clockA.advance(by: 13 * 3600 - 60); clockB.advance(by: 13 * 3600 - 60)
+        a.selectTab(seenAfterLook.id); a.selectTab(shown.id)
+        syncA.poll()
+        clockB.advance(by: 60)
+        b.runAutoArchive()
+        syncB.poll()
+        clockA.advance(by: 60)
+        syncA.poll()
+        expect(b.item(seenAfterLook.id) != nil, "the second Mac's early pass is undone for a tab the other Mac had looked at")
+        expect(!b.archive.contains { $0.id == seenAfterLook.id }, "and it leaves the second Mac's Archive")
+        expect(a.item(seenAfterLook.id) != nil, "the first Mac keeps the tab it looked at")
+        expect(a.item(seenBeforeLook.id) == nil && b.item(seenBeforeLook.id) == nil, "a tab idle past the limit on both is archived")
+        syncA.disable(); syncB.disable()
+    }
+
+    /// The other way round: the second Mac's pass took the tab and its bundle went up before iCloud brought it the first
+    /// Mac's look. The bundle lists its auto-archives, and the first Mac, which had looked at the tab, keeps it; the second
+    /// Mac then gets it back, out of its Archive.
+    @MainActor
+    private static func syncKeepsATabSeenHereThatTheOtherMacArchivedFirst() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-seen-here-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let a = SidebarStore(clock: clockA), b = SidebarStore(clock: clockB)
+        a.settings.autoArchiveEnabled = true
+        a.settings.autoArchive = .twelveHours
+        let shown = a.createTab(url: "https://example.com/shown-here", title: "Shown", select: true)
+        let seen = a.createTab(url: "https://example.com/seen-here", title: "Seen here", select: false)
+        let manual = a.createTab(url: "https://example.com/closed-there", title: "Closed there", select: false)
+        let syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio")
+        expect(syncA.enable(folder: folder) == .synced, "the first Mac writes its bundle")
+        let syncB = SettingsSyncService(store: b, clock: clockB, device: "MacBook", deviceID: "macbook")
+        guard case .bundleFound = syncB.enable(folder: folder) else { return expect(false, "the second Mac is asked once") }
+        syncB.useRemote()
+        b.selectTab(shown.id)
+
+        let bundle = folder.appendingPathComponent(SettingsSync.folderName)
+        let names = [SettingsSync.manifestName] + SettingsSync.fileNames
+        let before = Dictionary(uniqueKeysWithValues: names.map { ($0, try? Data(contentsOf: bundle.appendingPathComponent($0))) })
+        // Thirteen hours on, the first Mac looks at the tab and writes; iCloud hasn't brought that to the second Mac.
+        clockA.advance(by: 13 * 3600); clockB.advance(by: 13 * 3600)
+        a.selectTab(seen.id); a.selectTab(manual.id); a.selectTab(shown.id)
+        syncA.poll()
+        for name in names { try? before[name]??.write(to: bundle.appendingPathComponent(name)) }
+        // Someone closes the other tab there by hand, the second Mac's pass takes this one, and it writes.
+        clockB.advance(by: 60)
+        b.archiveTab(manual.id, reason: .manual)
+        b.runAutoArchive()
+        syncB.poll()
+        expect(b.item(seen.id) == nil, "the second Mac archived it, knowing only the older look")
+
+        clockA.advance(by: 120)
+        syncA.poll()
+        expect(a.item(seen.id) != nil, "the first Mac keeps the tab it looked at")
+        expect(a.item(manual.id) == nil, "a tab closed by hand on the other Mac still closes")
+        clockB.advance(by: 120)
+        syncB.poll()
+        expect(b.item(seen.id) != nil, "the tab comes back on the second Mac")
+        expect(!b.archive.contains { $0.id == seen.id }, "and leaves its Archive")
         syncA.disable(); syncB.disable()
     }
 
@@ -3266,6 +5034,1525 @@ enum StoreTests {
         expect(syncC.pendingChoice?.device == "Studio", "and the new Mac asks which sidebar to keep, as when sync is turned on")
         syncC.useLocal()
         syncA.disable(); syncC.disable()
+    }
+
+    // MARK: Easels in the sync bundle
+
+    /// Two Macs syncing through one folder, each with its own easel folder: the services in this
+    /// process share one data folder, so each gets its own `easels:`.
+    @MainActor
+    private final class EaselMacs {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-easels-\(UUID().uuidString)", isDirectory: true)
+        let root: URL, bundle: URL, easelsA: URL, easelsB: URL
+        let clockA = ManualScheduler(), clockB: ManualScheduler
+        let a: SidebarStore, b: SidebarStore
+        let syncA: SettingsSyncService, syncB: SettingsSyncService
+
+        /// Both Macs synced: the first turns sync on with `easels` saved, the second uses its sidebar.
+        /// `olderSecond`: the second took that bundle on a Cra without easel sync, then updated.
+        init(_ easels: [(Easel, [String: Data])] = [], olderSecond: Bool = false) {
+            root = dir.appendingPathComponent("sync", isDirectory: true)
+            bundle = root.appendingPathComponent(SettingsSync.folderName, isDirectory: true)
+            easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true)
+            easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+            clockB = ManualScheduler(now: clockA.now)
+            a = SidebarStore(clock: clockA)
+            b = SidebarStore(clock: clockB)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            for (easel, pictures) in easels { StoreTests.saveEasel(easel, pictures: pictures, in: easelsA) }
+            syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio", easels: easelsA)
+            syncB = SettingsSyncService(store: b, clock: clockB, device: "MacBook", deviceID: "macbook", easels: easelsB)
+            syncA.runPictures = StoreTests.picturesInPlace
+            syncB.runPictures = StoreTests.picturesInPlace
+            StoreTests.expect(syncA.enable(folder: root) == .synced, "the first Mac syncs through a folder")
+            let written = manifest
+            if olderSecond, var unknown = written {
+                unknown.easels = nil
+                write(unknown)
+            }
+            guard case .bundleFound = syncB.enable(folder: root) else { StoreTests.expect(false, "the second Mac is asked once"); return }
+            syncB.useRemote()
+            if olderSecond, let written { write(written) }
+        }
+
+        var manifest: SyncManifest? {
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            return (try? Data(contentsOf: bundle.appendingPathComponent(SettingsSync.manifestName))).flatMap { try? decoder.decode(SyncManifest.self, from: $0) }
+        }
+
+        func write(_ manifest: SyncManifest) {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+            try? encoder.encode(manifest).write(to: bundle.appendingPathComponent(SettingsSync.manifestName))
+        }
+
+        /// A change on the first Mac, then a look on each.
+        func syncAToB() {
+            clockA.advance(by: 10); syncA.poll()
+            clockB.advance(by: 10); syncB.poll()
+        }
+
+        func done() {
+            syncA.disable(); syncB.disable()
+            try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    /// Runs a picture task where it is handed over: a look is done when `poll()` returns.
+    @MainActor
+    private static func picturesInPlace(_ work: SettingsSyncService.PictureWork,
+                                        _ done: @escaping @MainActor @Sendable (SettingsSyncService.PictureWork.Result) -> Void) {
+        done(work.run())
+    }
+
+    /// What Export… or Import… answers when its picture tasks run in place; nil when it hasn't answered.
+    @MainActor
+    private static func answer(_ start: (@escaping @MainActor (String?) -> Void) -> Void) -> String?? {
+        var said: String?? = nil
+        start { said = .some($0) }
+        return said
+    }
+
+    /// Picture tasks handed over and not run yet: a test runs them when it chooses, as the thread they go to would.
+    @MainActor
+    private final class HeldPictures {
+        var tasks: [() -> Void] = []
+
+        func hold(_ sync: SettingsSyncService) {
+            sync.runPictures = { [unowned self] work, done in tasks.append { done(work.run()) } }
+        }
+
+        func runAll() {
+            let run = tasks
+            tasks = []
+            for task in run { task() }
+        }
+    }
+
+    /// Saves an easel the way the canvas does: its JSON, and its pictures in the folder of its id.
+    private static func saveEasel(_ easel: Easel, pictures: [String: Data] = [:], in folder: URL) {
+        let pictureFolder = folder.appendingPathComponent(easel.id.uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: pictureFolder, withIntermediateDirectories: true)
+        for (name, data) in pictures { try? data.write(to: pictureFolder.appendingPathComponent(name)) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode(easel).write(to: folder.appendingPathComponent(easel.id.uuidString + ".json"), options: .atomic)
+    }
+
+    private static func loadEasel(_ id: UUID, in folder: URL) -> Easel? {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        return (try? Data(contentsOf: folder.appendingPathComponent(id.uuidString + ".json"))).flatMap { try? decoder.decode(Easel.self, from: $0) }
+    }
+
+    /// An easel with one picture card, and that picture's bytes by name.
+    private static func pictured(_ title: String) -> (Easel, [String: Data]) {
+        let name = UUID().uuidString + ".png"
+        let card = Easel.Item(kind: .image(file: name), frame: .init(x: 120, y: 160, width: 200, height: 100))
+        return (Easel(title: title, items: [card]), [name: Data("the picture \(name)".utf8)])
+    }
+
+    @MainActor
+    private static func syncEasels() {
+        syncCarriesAnEaselAndItsPicture()
+        syncMergesEaselEditsFromBothMacs()
+        syncDeletesAnEaselDeletedOnTheOtherMac()
+        syncPrunesADeletedEaselFromTheBundle()
+        syncLeavesEaselsAloneForAnOlderCrasBundle()
+        syncHoldsABundleWhileAnEaselArrives()
+        importNeverDeletesAnEasel()
+        syncNeverTouchesABadEaselPath()
+        syncWritesSoonAfterAnEaselChange()
+        syncLooksWithoutReadingAnIdleEasel()
+        syncChangesAnOpenEaselOnItsCanvas()
+        syncKeepsTheEaselsOfTheMacThatUpdatedFirst()
+        syncTakesTheRealEaselOverABlankCopy()
+        importKeepsARealEaselOverABlankCopy()
+        syncPutsBackAnEaselFileGoneFromTheFolder()
+        syncNeverSendsAnUnreadableEaselAsDeleted()
+        syncSaysWhenAnEaselCannotBeSaved()
+        syncKeepsTheEaselsOfTheMacThatUpdatedFirstAfterTheOtherWroteOnAnOlderCra()
+        syncNeverSendsAnUnreadableEaselAsDeletedAfterARelaunch()
+        syncHoldsItsBundleWhileAnUnreadableEaselHasNoCopyToSend()
+        useThatSidebarThatFailsAsksAgainOnlyForANewBundle()
+        syncNeverFollowsALinkedEaselsFolder()
+        syncWritesNoPictureThroughALinkedEaselFolder()
+        syncNeverCopiesInALinkedPicture()
+        syncNeverSendsAnEaselFolderItCannotListAsEmpty()
+        syncSaysWhenItCannotListTheEaselFolder()
+        syncWritesWithNoEaselFolder()
+        syncClosesAnOpenEaselDeletedThereAfterAFailedTry()
+        syncCopiesAPictureTheOtherMacGotBack()
+        syncRewritesADamagedPictureInTheFolder()
+        syncTakesNoBundleWhileItCannotListTheEaselFolder()
+        syncStartsNoPictureTaskAgainForAPictureItCannotRead()
+        flushWritesASaveThatWaitsOutItsDelay()
+        easelFolderWatcherReportsASave()
+        syncTakesAnEaselRewrittenBetweenItsLookAndItsApplyAtTheNextLook()
+        syncWritesNoEaselBeforeItsPicturesAreInTheFolder()
+        syncAppliesNothingBeforeThePicturesItLacksAreCopied()
+        syncStartsNoSecondPictureTaskWhileOneRuns()
+        syncAppliesNothingWhenAPictureCopyFails()
+        syncLooksWithoutReadingAPictureOnTheMainThread()
+        syncTakesABundleWrittenWhileItsPicturesCopy()
+        syncWritesNoPictureThroughAFolderLinkedWhileTheTaskWaits()
+        syncSendsAPictureOnceItCanBeReadAgain()
+        exportCopiesItsPicturesOffTheMainThread()
+        importCopiesThePicturesItLacksOffTheMainThread()
+        settingsTurnsExportBackOnOnceItAnswers()
+        exportKeepsThePicturesOfAnEaselDeletedWhileItCopies()
+        exportKeepsAnEaselDeletedBeforeItsPictureCopied()
+        exportKeepsTheFileOfAnEaselRowDeletedWhileItCopies()
+        bundleWriteFollowsNoLinkSwappedInOnceItMayWrite()
+        bundleDirectoryWritesThroughNoLinkAtAnyLevel()
+        exportNamesAPictureItCouldNotWrite()
+        syncSendsAPictureOnceTheBundleTakesItAgain()
+        syncWritesThroughACraLinkTheUserMade()
+        syncWritesThroughACraLinkSetUpOnAnOlderCra()
+        syncPrunesATempFileAWriteLeftBehind()
+        syncReadsNoPictureThroughALinkSwappedInWhileTheTaskWaits()
+        syncReadsNoFIFOSwappedInWhileTheTaskWaits()
+        syncReadsNoFIFONamedAsAnEaselFile()
+        bundleReadWaitsOnNoFIFOSwappedInAfterItsCheck()
+        bundleReadFollowsNoLinkSwappedInAfterItsCheck()
+        exportWritesTheSidebarOfTheEaselsItListed()
+        useThatSidebarHashesAPictureOffTheMainThread()
+        importNamesAPictureGoneBeforeItApplies()
+    }
+
+    // MARK: Picture work off the main thread (#4)
+
+    /// The other Mac writes its easels before its manifest, so a look can find a whole bundle and the apply a moment later
+    /// an easel file the next manifest names (seen with two copies of Cra on one folder, PR #894 review). That is the
+    /// bundle still being written: no fault and no "could not be saved" in Settings, and the next look applies it.
+    @MainActor
+    private static func syncTakesAnEaselRewrittenBetweenItsLookAndItsApplyAtTheNextLook() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let id = UUID()
+        saveEasel(Easel(id: id, title: "First"), in: macs.easelsA)
+        macs.syncAToB()
+        expect(loadEasel(id, in: macs.easelsB)?.title == "First", "the second Mac has the easel")
+        // The first Mac writes a second bundle; the second Mac looks at it, and before it applies it the first Mac
+        // writes its third, easel file first.
+        saveEasel(Easel(id: id, title: "Second"), in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        macs.syncB.lookedAtBundle = {
+            saveEasel(Easel(id: id, title: "Third"), in: macs.easelsA)
+            macs.clockA.advance(by: 10); macs.syncA.poll()
+        }
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        macs.syncB.lookedAtBundle = {}
+        expect(macs.syncB.error == nil, "a bundle still being written is no error in Settings: \(macs.syncB.error ?? "")")
+        // The next look finds the third bundle whole and applies it.
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(loadEasel(id, in: macs.easelsB)?.title == "Third", "the next look applies the easel")
+        expect(macs.syncB.error == nil, "and Settings shows no error")
+    }
+
+    /// A write copies its pictures on a picture task: the easels, the files and the manifest wait for it.
+    @MainActor
+    private static func syncWritesNoEaselBeforeItsPicturesAreInTheFolder() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let held = HeldPictures()
+        held.hold(macs.syncA)
+        let (easel, pictures) = pictured("Its picture copied first")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        expect(!held.tasks.isEmpty && macs.manifest?.easels?["Easels/\(easel.id.uuidString).json"] == nil,
+               "the bundle doesn't name the easel while its picture is being copied")
+        held.runAll()
+        expect(macs.manifest?.easels?["Easels/\(easel.id.uuidString)/\(pictures.keys.first!)"] != nil,
+               "once the copy is done, the write names the easel and its picture")
+    }
+
+    /// An apply copies the pictures this Mac lacks on a picture task: the easels and the sidebar wait for it.
+    @MainActor
+    private static func syncAppliesNothingBeforeThePicturesItLacksAreCopied() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Copied in first")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        let tab = macs.a.createTab(url: "https://example.com/beside-the-easel")
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let held = HeldPictures()
+        held.hold(macs.syncB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        // The look hashes the folder's picture first; the apply then copies it.
+        held.runAll()
+        expect(!held.tasks.isEmpty && !macs.b.document.items.contains { $0.id == tab.id } && loadEasel(easel.id, in: macs.easelsB) == nil,
+               "neither the sidebar nor the easel is applied while the picture is being copied")
+        held.runAll()
+        expect(macs.b.document.items.contains { $0.id == tab.id } && loadEasel(easel.id, in: macs.easelsB) == easel,
+               "once it is here, both are")
+    }
+
+    @MainActor
+    private static func syncStartsNoSecondPictureTaskWhileOneRuns() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Being copied")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        let held = HeldPictures()
+        held.hold(macs.syncA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        macs.syncA.poll()
+        macs.clockA.advance(by: 30)
+        expect(held.tasks.count == 1, "a look while a picture task runs waits for it (\(held.tasks.count) tasks)")
+    }
+
+    /// A picture copy that fails leaves the sidebar and the easels as they were, and Settings says why.
+    @MainActor
+    private static func syncAppliesNothingWhenAPictureCopyFails() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Its copy fails")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        let tab = macs.a.createTab(url: "https://example.com/beside-a-failed-copy")
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let held = HeldPictures()
+        held.hold(macs.syncB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        held.runAll()
+        // Between the look and the copy, the folder's picture changes.
+        try? Data("other bytes".utf8).write(to: macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(pictures.keys.first!)"))
+        held.runAll()
+        expect(!macs.b.document.items.contains { $0.id == tab.id } && loadEasel(easel.id, in: macs.easelsB) == nil && macs.syncB.error != nil,
+               "nothing else is applied, and Settings says the easels couldn't be saved")
+    }
+
+    /// A look hashes a picture it hasn't seen on a picture task, not on the main thread.
+    @MainActor
+    private static func syncLooksWithoutReadingAPictureOnTheMainThread() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Hashed off the main thread")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let held = HeldPictures()
+        held.hold(macs.syncB)
+        let reads = macs.syncB.easelReads
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(held.tasks.count == 1 && macs.syncB.easelReads == reads + 1,
+               "the look reads only the easel's JSON, and hands the picture to a task (\(macs.syncB.easelReads - reads) reads)")
+    }
+
+    /// Another Mac wrote while this one copied its pictures, and the write that followed went over that bundle unseen.
+    @MainActor
+    private static func syncTakesABundleWrittenWhileItsPicturesCopy() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let held = HeldPictures()
+        held.hold(macs.syncA)
+        let (easel, pictures) = pictured("Copied while the other Mac writes")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let tab = macs.b.createTab(url: "https://example.com/written-meanwhile")
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        held.runAll()
+        expect(macs.a.document.items.contains { $0.id == tab.id }, "once its pictures are copied, the first Mac takes the bundle written meanwhile")
+    }
+
+    /// A peer put a link in place of an easel's picture folder while the picture task waited: the copy went through it.
+    @MainActor
+    private static func syncWritesNoPictureThroughAFolderLinkedWhileTheTaskWaits() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let outside = outsideFolder(in: macs)
+        let held = HeldPictures()
+        held.hold(macs.syncA)
+        let (easel, pictures) = pictured("Relinked while its copy waits")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let pictureFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)")
+        try? FileManager.default.createDirectory(at: pictureFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: pictureFolder, withDestinationURL: outside)
+        held.runAll()
+        let left = (try? FileManager.default.subpathsOfDirectory(atPath: outside.path))?.sorted()
+        expect(left == ["keep.txt", "sub", "sub/x.txt"], "the folder the link points at gets no picture (\(left ?? []))")
+    }
+
+    /// A picture this Mac couldn't read stayed out of the bundle once its permissions were fixed, which change
+    /// neither its size nor its date.
+    @MainActor
+    private static func syncSendsAPictureOnceItCanBeReadAgain() {
+        let macs = EaselMacs()
+        let (easel, pictures) = pictured("Readable again")
+        let name = pictures.keys.first!
+        let picture = macs.easelsA.appendingPathComponent("\(easel.id.uuidString)/\(name)")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: picture.path)
+            macs.done()
+        }
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: picture.path)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: picture.path)
+        macs.clockA.advance(by: 30)
+        expect(macs.manifest?.easels?["\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(name)"] != nil,
+               "the next look sends the picture it can read again")
+    }
+
+    /// Export… read, hashed and copied its pictures on the main thread, and Settings hung until they were done.
+    @MainActor
+    private static func exportCopiesItsPicturesOffTheMainThread() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-export-off-main-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easels = dir.appendingPathComponent("Easels", isDirectory: true)
+        let (easel, pictures) = pictured("Exported off the main thread")
+        saveEasel(easel, pictures: pictures, in: easels)
+        let clock = ManualScheduler()
+        let sync = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easels)
+        let held = HeldPictures()
+        held.hold(sync)
+        sync.export(to: dir.appendingPathComponent("export", isDirectory: true)) { _ in }
+        expect(held.tasks.count == 1, "Export… hands its picture copy to a task (\(held.tasks.count) tasks)")
+    }
+
+    /// What Export… leaves in its folder when the user deletes an easel, which has a row, while its picture copy waits;
+    /// `exportedBefore`: the folder holds its pictures from an earlier Export…, and a second easel's picture is copied.
+    @MainActor
+    private static func exportAfterDeletingAnEaselWhileItsCopyWaits(exportedBefore: Bool)
+        -> (easel: Easel, manifest: SyncManifest?, sidebar: String?, folder: URL, dir: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-export-deleted-\(UUID().uuidString)", isDirectory: true)
+        let easels = dir.appendingPathComponent("Easels", isDirectory: true), exported = dir.appendingPathComponent("export", isDirectory: true)
+        let (easel, pictures) = pictured("Deleted while Export… copies")
+        saveEasel(easel, pictures: pictures, in: easels)
+        let clock = ManualScheduler()
+        let store = SidebarStore(clock: clock)
+        _ = store.createTab(url: easel.url)
+        let sync = SettingsSyncService(store: store, clock: clock, device: "Studio", deviceID: "studio", easels: easels)
+        if exportedBefore {
+            sync.runPictures = picturesInPlace
+            expect(answer { sync.export(to: exported, done: $0) } == .some(nil), "the first Export… writes the easel and its picture")
+            let (other, otherPictures) = pictured("Copied by the second Export…")
+            saveEasel(other, pictures: otherPictures, in: easels)
+        }
+        let held = HeldPictures()
+        held.hold(sync)
+        var said: String?? = nil
+        sync.export(to: exported) { said = .some($0) }
+        EaselFolder.remove(easel.id, in: easels)
+        held.runAll()
+        expect(said == .some(nil), "Export… answers that it exported (\(String(describing: said)))")
+        let folder = exported.appendingPathComponent(SettingsSync.folderName, isDirectory: true)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let manifest = (try? Data(contentsOf: folder.appendingPathComponent(SettingsSync.manifestName)))
+            .flatMap { try? decoder.decode(SyncManifest.self, from: $0) }
+        let sidebar = (try? Data(contentsOf: folder.appendingPathComponent(SettingsSync.sidebarName))).map { String(decoding: $0, as: UTF8.self) }
+        return (easel, manifest, sidebar, folder, dir)
+    }
+
+    /// Whether the export names the easel's JSON, and holds every file its manifest names.
+    private static func exportHoldsTheEaselAndWhatItNames(_ easel: Easel, _ manifest: SyncManifest?, in folder: URL) -> Bool {
+        guard let named = manifest?.easels else { return false }
+        let held = named.keys.allSatisfy { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
+        return held && named["\(SettingsSync.easelsName)/\(easel.id.uuidString).json"] != nil
+    }
+
+    /// An easel deleted while Export… copied another's picture kept its JSON in the export and lost the pictures an
+    /// earlier Export… had put there (Greptile, PR #894).
+    @MainActor
+    private static func exportKeepsThePicturesOfAnEaselDeletedWhileItCopies() {
+        let (easel, manifest, _, folder, dir) = exportAfterDeletingAnEaselWhileItsCopyWaits(exportedBefore: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        expect(exportHoldsTheEaselAndWhatItNames(easel, manifest, in: folder),
+               "the export holds the deleted easel and every picture it names (\(manifest?.easels?.keys.sorted() ?? []))")
+    }
+
+    /// An easel deleted while Export… waited to copy its picture went into the export naming a picture it didn't hold.
+    @MainActor
+    private static func exportKeepsAnEaselDeletedBeforeItsPictureCopied() {
+        let (easel, manifest, _, folder, dir) = exportAfterDeletingAnEaselWhileItsCopyWaits(exportedBefore: false)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        expect(exportHoldsTheEaselAndWhatItNames(easel, manifest, in: folder),
+               "the export holds the deleted easel and every picture it names (\(manifest?.easels?.keys.sorted() ?? []))")
+    }
+
+    /// An easel deleted while Export… copied left its row in the exported sidebar without its file: Import of that export
+    /// opened the row as a blank easel.
+    @MainActor
+    private static func exportKeepsTheFileOfAnEaselRowDeletedWhileItCopies() {
+        let (easel, manifest, sidebar, _, dir) = exportAfterDeletingAnEaselWhileItsCopyWaits(exportedBefore: false)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let row = sidebar?.contains(easel.id.uuidString) == true
+        let file = manifest?.easels?["\(SettingsSync.easelsName)/\(easel.id.uuidString).json"] != nil
+        expect(row == file, "the export holds the deleted easel's row with its file, or neither (row: \(row), file: \(file))")
+    }
+
+    /// A peer swapped an easel's picture folder in the bundle for a link once the coordinator let the write go, after
+    /// any check: the write followed the link out of the bundle.
+    @MainActor
+    private static func bundleWriteFollowsNoLinkSwappedInOnceItMayWrite() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let outside = outsideFolder(in: macs)
+        let id = UUID().uuidString
+        let pictureFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(id)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: pictureFolder, withIntermediateDirectories: true)
+        try? SettingsSyncService.coordinatedWrite(Data("a picture".utf8), to: "\(SettingsSync.easelsName)/\(id)/p.png", in: macs.bundle) {
+            try? FileManager.default.removeItem(at: pictureFolder)
+            try? FileManager.default.createSymbolicLink(at: pictureFolder, withDestinationURL: outside)
+        }
+        let left = (try? FileManager.default.subpathsOfDirectory(atPath: outside.path))?.sorted()
+        expect(left == ["keep.txt", "sub", "sub/x.txt"], "the folder the link points at gets no picture (\(left ?? []))")
+    }
+
+    /// A peer's link in place of `Easels`, an easel's picture folder or the picture: a bundle write puts nothing outside
+    /// the bundle, and replaces a linked picture rather than writing through it.
+    @MainActor
+    private static func bundleDirectoryWritesThroughNoLinkAtAnyLevel() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-bundle-links-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let id = UUID().uuidString
+        for (level, name) in [(1, "Easels"), (2, "the picture folder"), (3, "the picture")] {
+            let root = dir.appendingPathComponent("\(level)", isDirectory: true)
+            let outside = root.appendingPathComponent("outside", isDirectory: true), keep = outside.appendingPathComponent("keep.txt")
+            try? FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try? Data("keep".utf8).write(to: keep)
+            let folder = root.appendingPathComponent("sync/\(SettingsSync.folderName)", isDirectory: true)
+            let path = "\(SettingsSync.easelsName)/\(id)/p.png"
+            let parts = [folder] + (1...3).map { folder.appendingPathComponent(path.split(separator: "/").prefix($0).joined(separator: "/")) }
+            try? FileManager.default.createDirectory(at: parts[level].deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.createSymbolicLink(at: parts[level], withDestinationURL: level == 3 ? keep : outside)
+            try? BundleDirectory.write(Data("a picture".utf8), to: path, in: folder)
+            let left = (try? FileManager.default.contentsOfDirectory(atPath: outside.path))?.sorted()
+            let kept = (try? Data(contentsOf: keep)) == Data("keep".utf8)
+            let replaced = level < 3 || (try? Data(contentsOf: parts[3])) == Data("a picture".utf8)
+            expect(left == ["keep.txt"] && kept && replaced, "a link in place of \(name) takes no write out of the bundle (\(left ?? []))")
+        }
+    }
+
+    /// A picture Export… couldn't write left its easel out of the export, and Export… said it had exported.
+    @MainActor
+    private static func exportNamesAPictureItCouldNotWrite() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-export-unwritable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easels = dir.appendingPathComponent("Easels", isDirectory: true), exported = dir.appendingPathComponent("export", isDirectory: true)
+        let (easel, pictures) = pictured("Its picture can't be exported")
+        saveEasel(easel, pictures: pictures, in: easels)
+        // A file where the easel's picture folder goes: the picture can't be written.
+        let inTheWay = exported.appendingPathComponent("\(SettingsSync.folderName)/\(SettingsSync.easelsName)/\(easel.id.uuidString)")
+        try? FileManager.default.createDirectory(at: inTheWay.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("in the way".utf8).write(to: inTheWay)
+        let clock = ManualScheduler()
+        let sync = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easels)
+        sync.runPictures = picturesInPlace
+        let said = answer { sync.export(to: exported, done: $0) }
+        expect(said??.contains(pictures.keys.first!) == true, "Export… names the picture it couldn't write (\(String(describing: said)))")
+    }
+
+    /// A picture sync couldn't write into the bundle stayed out of every later bundle, with no error, until a relaunch.
+    @MainActor
+    private static func syncSendsAPictureOnceTheBundleTakesItAgain() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Sent once the way is clear")
+        let inTheWay = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)")
+        try? FileManager.default.createDirectory(at: inTheWay.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("in the way".utf8).write(to: inTheWay)
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let said = macs.syncA.error
+        try? FileManager.default.removeItem(at: inTheWay)
+        macs.clockA.advance(by: 30)
+        let sent = macs.manifest?.easels?["\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(pictures.keys.first!)"] != nil
+        expect(said != nil && sent, "sync says it couldn't write the picture, and sends it at the next look (\(said ?? "no error"), sent: \(sent))")
+    }
+
+    /// Whether sync, set up by `setUp` with the folder `<dir>/Sync` whose `Cra` links to `target`, writes its bundle into `target`.
+    @MainActor
+    private static func syncWritesIntoTheLinkedFolder(_ target: String, setUp: (SettingsSyncService, _ picked: URL) -> Void) -> Bool {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-linked-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let real = dir.appendingPathComponent(target, isDirectory: true), picked = dir.appendingPathComponent("Sync", isDirectory: true)
+        try? FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: picked, withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: picked.appendingPathComponent(SettingsSync.folderName), withDestinationURL: real)
+        let clock = ManualScheduler()
+        let sync = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio",
+                                       easels: dir.appendingPathComponent("Easels", isDirectory: true))
+        sync.runPictures = picturesInPlace
+        defer { sync.disable() }
+        setUp(sync, picked)
+        return FileManager.default.fileExists(atPath: real.appendingPathComponent(SettingsSync.manifestName).path)
+    }
+
+    /// The user picked a folder whose `Cra` links to a folder named otherwise, or picked that link itself: every bundle
+    /// write failed, or went to a new `Cra` inside the target.
+    @MainActor
+    private static func syncWritesThroughACraLinkTheUserMade() {
+        let throughFolder = syncWritesIntoTheLinkedFolder("Dropbox/Settings") { sync, picked in _ = sync.enable(folder: picked) }
+        let throughLink = syncWritesIntoTheLinkedFolder("Dropbox/Settings") { sync, picked in
+            _ = sync.enable(folder: picked.appendingPathComponent(SettingsSync.folderName))
+        }
+        expect(throughFolder && throughLink, "sync writes into the folder the Cra link points at (picked its folder: \(throughFolder), the link: \(throughLink))")
+    }
+
+    /// Sync set up on v0.1.58 with a folder whose `Cra` is a link: after the update, every bundle write failed.
+    @MainActor
+    private static func syncWritesThroughACraLinkSetUpOnAnOlderCra() {
+        let written = syncWritesIntoTheLinkedFolder("Dropbox/\(SettingsSync.folderName)") { sync, picked in
+            sync.disable()
+            // sync.json as v0.1.58 saved it: the picked folder, links unresolved.
+            let json = #"{"devices":[],"location":{"folder":{"_0":"\#(picked.path)"}}}"#
+            try? Data(json.utf8).write(to: AppPaths.file("sync.json"))
+            let clock = ManualScheduler()
+            let relaunched = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio",
+                                                 easels: picked.deletingLastPathComponent().appendingPathComponent("Easels", isDirectory: true))
+            relaunched.runPictures = picturesInPlace
+            relaunched.poll()
+            relaunched.disable()
+        }
+        expect(written, "sync set up on an older Cra writes into the folder its Cra link points at")
+    }
+
+    /// Temp files a bundle write left at the bundle's root and in an easel's picture folder, when Cra stopped before
+    /// their rename, go at the next write.
+    @MainActor
+    private static func syncPrunesATempFileAWriteLeftBehind() {
+        let (easel, pictures) = pictured("A write stopped beside it")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let left = [macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)/.\(pictures.keys.first!).\(UUID().uuidString).tmp"),
+                    macs.bundle.appendingPathComponent(".\(SettingsSync.manifestName).\(UUID().uuidString).tmp")]
+        for file in left { try? Data("half a file".utf8).write(to: file) }
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let kept = left.filter { FileManager.default.fileExists(atPath: $0.path) }.map(\.lastPathComponent)
+        expect(kept.isEmpty, "the next write removes the temp files left behind (\(kept))")
+    }
+
+    /// Settings turns Export… and Import… off while one runs, and back on once it answers.
+    @MainActor
+    private static func settingsTurnsExportBackOnOnceItAnswers() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-export-answers-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easels = dir.appendingPathComponent("Easels", isDirectory: true)
+        let (easel, pictures) = pictured("Exported while Settings waits")
+        saveEasel(easel, pictures: pictures, in: easels)
+        let clock = ManualScheduler()
+        let sync = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easels)
+        let held = HeldPictures()
+        held.hold(sync)
+        var said: String?? = nil
+        sync.export(to: dir.appendingPathComponent("export", isDirectory: true)) { said = .some($0) }
+        let waiting = sync.transferring && said == nil
+        held.runAll()
+        expect(waiting && !sync.transferring && said == .some(nil), "Export… stays off until it answers that it exported")
+    }
+
+    /// Import… hashed the bundle's pictures and copied the ones this Mac lacks on the main thread.
+    @MainActor
+    private static func importCopiesThePicturesItLacksOffTheMainThread() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-import-off-main-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let exported = dir.appendingPathComponent("export", isDirectory: true)
+        let (easel, pictures) = pictured("Imported off the main thread")
+        saveEasel(easel, pictures: pictures, in: easelsA)
+        let clock = ManualScheduler()
+        let syncA = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easelsA)
+        syncA.runPictures = picturesInPlace
+        syncA.export(to: exported) { _ in }
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        let held = HeldPictures()
+        held.hold(syncB)
+        syncB.importBundle(from: exported) { _ in }
+        expect(held.tasks.count == 1, "Import… hands its picture reads to a task (\(held.tasks.count) tasks)")
+    }
+
+    /// How many files the second Mac's picture task reads when `swap` replaces the folder's picture while the task waits.
+    @MainActor
+    private static func readsAfterSwappingThePicture(_ swap: (_ picture: URL, _ bytes: Data, _ dir: URL) -> Void) -> Int {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Swapped while its task waits")
+        let (name, bytes) = pictures.first!
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let held = HeldPictures()
+        held.hold(macs.syncB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        let reads = macs.syncB.easelReads
+        let inFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(name)")
+        try? FileManager.default.removeItem(at: inFolder)
+        swap(inFolder, bytes, macs.dir)
+        held.runAll()
+        return macs.syncB.easelReads - reads
+    }
+
+    /// A peer swapped a bundle picture for a link to a file elsewhere while the picture task waited: the task read through it.
+    @MainActor
+    private static func syncReadsNoPictureThroughALinkSwappedInWhileTheTaskWaits() {
+        let reads = readsAfterSwappingThePicture { picture, bytes, dir in
+            let elsewhere = dir.appendingPathComponent("elsewhere.png")
+            try? bytes.write(to: elsewhere)
+            try? FileManager.default.createSymbolicLink(at: picture, withDestinationURL: elsewhere)
+        }
+        expect(reads == 0, "the task reads nothing through the link (\(reads) reads)")
+    }
+
+    /// A FIFO in place of a bundle picture is never read: the read would wait for a writer for ever.
+    @MainActor
+    private static func syncReadsNoFIFOSwappedInWhileTheTaskWaits() {
+        let reads = readsAfterSwappingThePicture { picture, _, _ in _ = mkfifo(picture.path, 0o644) }
+        expect(reads == 0, "the task leaves the FIFO alone (\(reads) reads)")
+    }
+
+    /// A peer's FIFO named as an easel file in the bundle: opening it on the main thread waited for a writer for ever.
+    /// The test holds it open for writing, so a read tried returns and is counted rather than hanging the suite.
+    @MainActor
+    private static func syncReadsNoFIFONamedAsAnEaselFile() {
+        let easel = Easel(title: "Its file turned into a FIFO")
+        let macs = EaselMacs([(easel, [:])])
+        defer { macs.done() }
+        let file = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString).json")
+        try? FileManager.default.removeItem(at: file)
+        _ = mkfifo(file.path, 0o644)
+        let writer = open(file.path, O_RDWR)
+        defer { close(writer) }
+        let reads = macs.syncB.easelReads
+        macs.clockB.advance(by: 30)
+        expect(macs.syncB.easelReads == reads, "the look leaves the FIFO alone (\(macs.syncB.easelReads - reads) reads)")
+    }
+
+    /// A peer swapped an easel file for a FIFO after its check: the file coordinator opened it before the read and waited
+    /// for a writer for ever, on the main thread. A read that waits stops the suite here.
+    @MainActor
+    private static func bundleReadWaitsOnNoFIFOSwappedInAfterItsCheck() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-bundle-fifo-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = "\(SettingsSync.easelsName)/\(UUID().uuidString).json", file = dir.appendingPathComponent(path)
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Data("an easel".utf8).write(to: file)
+        let read = SettingsSyncService.coordinatedRead(path, in: dir) {
+            try? FileManager.default.removeItem(at: file)
+            _ = mkfifo(file.path, 0o644)
+        }
+        expect(read == nil, "the read takes nothing from the FIFO")
+    }
+
+    /// A peer swapped an easel's picture folder in the bundle for a link after the read's check: the read took a file
+    /// from outside the bundle.
+    @MainActor
+    private static func bundleReadFollowsNoLinkSwappedInAfterItsCheck() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let outside = outsideFolder(in: macs)
+        try? Data("outside".utf8).write(to: outside.appendingPathComponent("p.png"))
+        let id = UUID().uuidString
+        let pictureFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(id)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: pictureFolder, withIntermediateDirectories: true)
+        try? Data("a picture".utf8).write(to: pictureFolder.appendingPathComponent("p.png"))
+        let read = SettingsSyncService.coordinatedRead("\(SettingsSync.easelsName)/\(id)/p.png", in: macs.bundle) {
+            try? FileManager.default.removeItem(at: pictureFolder)
+            try? FileManager.default.createSymbolicLink(at: pictureFolder, withDestinationURL: outside)
+        }
+        expect(read == nil, "the read takes nothing through the link (\(read.map { String(decoding: $0, as: UTF8.self) } ?? "nothing"))")
+    }
+
+    /// An easel made while Export… copied a picture went into the exported sidebar without its file: Import of that
+    /// export opened its row as a blank easel (Greptile, PR #894).
+    @MainActor
+    private static func exportWritesTheSidebarOfTheEaselsItListed() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-export-snapshot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easels = dir.appendingPathComponent("Easels", isDirectory: true), exported = dir.appendingPathComponent("export", isDirectory: true)
+        let (easel, pictures) = pictured("Exported while another is made")
+        saveEasel(easel, pictures: pictures, in: easels)
+        let clock = ManualScheduler()
+        let store = SidebarStore(clock: clock)
+        let sync = SettingsSyncService(store: store, clock: clock, device: "Studio", deviceID: "studio", easels: easels)
+        let held = HeldPictures()
+        held.hold(sync)
+        var said: String?? = nil
+        sync.export(to: exported) { said = .some($0) }
+        let made = Easel(title: "Made while Export… copies")
+        saveEasel(made, in: easels)
+        _ = store.createTab(url: made.url)
+        held.runAll()
+        let folder = exported.appendingPathComponent(SettingsSync.folderName, isDirectory: true)
+        let sidebar = (try? Data(contentsOf: folder.appendingPathComponent(SettingsSync.sidebarName))).map { String(decoding: $0, as: UTF8.self) }
+        let inSidebar = sidebar?.contains(made.id.uuidString) == true
+        let file = FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(SettingsSync.easelsName)/\(made.id.uuidString).json").path)
+        expect(said == .some(nil) && inSidebar == file, "the export holds the new easel's row with its file, or neither (row: \(inSidebar), file: \(file))")
+    }
+
+    /// Use That Sidebar hashed a picture that changed since the question on the main thread.
+    @MainActor
+    private static func useThatSidebarHashesAPictureOffTheMainThread() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-use-remote-off-main-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let root = dir.appendingPathComponent("sync", isDirectory: true)
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let (easel, pictures) = pictured("Hashed again after the question")
+        saveEasel(easel, pictures: pictures, in: easelsA)
+        let syncA = SettingsSyncService(store: SidebarStore(clock: clockA), clock: clockA, device: "Studio", deviceID: "studio", easels: easelsA)
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clockB), clock: clockB, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        syncA.runPictures = picturesInPlace
+        let held = HeldPictures()
+        held.hold(syncB)
+        defer { syncA.disable(); syncB.disable() }
+        expect(syncA.enable(folder: root) == .synced, "the first Mac syncs through a folder")
+        _ = syncB.enable(folder: root)
+        held.runAll()
+        expect(syncB.pendingChoice != nil, "the second Mac is asked once its look hashed the picture")
+        // The picture's date moves after the question: its hash is unknown again.
+        let inFolder = root.appendingPathComponent("\(SettingsSync.folderName)/\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(pictures.keys.first!)")
+        try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000_000)], ofItemAtPath: inFolder.path)
+        let reads = syncB.easelReads
+        syncB.useRemote()
+        expect(syncB.easelReads == reads && held.tasks.count == 1,
+               "Use That Sidebar hands the picture to a task (\(syncB.easelReads - reads) reads, \(held.tasks.count) tasks)")
+    }
+
+    /// A picture Import copied went from this Mac before the import applied, and Settings said only "The file doesn't exist."
+    @MainActor
+    private static func importNamesAPictureGoneBeforeItApplies() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-import-gone-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let exported = dir.appendingPathComponent("export", isDirectory: true)
+        let (easel, pictures) = pictured("Its picture goes during the import")
+        let name = pictures.keys.first!
+        saveEasel(easel, pictures: pictures, in: easelsA)
+        let clock = ManualScheduler()
+        let syncA = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easelsA)
+        syncA.runPictures = picturesInPlace
+        _ = answer { syncA.export(to: exported, done: $0) }
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        // Each task's copy is gone again by the time its answer reaches the main thread.
+        syncB.runPictures = { work, done in
+            let result = work.run()
+            try? FileManager.default.removeItem(at: easelsB.appendingPathComponent("\(easel.id.uuidString)/\(name)"))
+            done(result)
+        }
+        let said = answer { syncB.importBundle(from: exported, done: $0) }
+        expect(said??.contains(name) == true, "Import… names the picture that went (\(String(describing: said)))")
+    }
+
+    /// A test that reads a saved file next (a relaunch) flushes the save instead of sleeping past its delay.
+    @MainActor
+    private static func flushWritesASaveThatWaitsOutItsDelay() {
+        let file = JSONStore<[String]>("flush-\(UUID().uuidString).json")
+        defer { for url in [file.url, file.url.appendingPathExtension("bak")] { try? FileManager.default.removeItem(at: url) } }
+        file.save(["waiting"])
+        file.flush()
+        expect((try? Data(contentsOf: file.url)).flatMap { try? JSONDecoder().decode([String].self, from: $0) } == ["waiting"],
+               "a flushed save is on disk when flush returns")
+    }
+
+    /// An easel folder, unlisted since (a later date, as after a relaunch) and no longer listable.
+    private static func makeEaselFolderUnlistable(_ folder: URL) {
+        let fm = FileManager.default
+        try? fm.setAttributes([.modificationDate: Date(timeIntervalSinceReferenceDate: 0)], ofItemAtPath: folder.path)
+        try? fm.setAttributes([.posixPermissions: 0o311], ofItemAtPath: folder.path)
+    }
+
+    /// The easel folder couldn't be listed after a relaunch, and the bundle went up with no easels: the other
+    /// Mac deleted every one.
+    @MainActor
+    private static func syncNeverSendsAnEaselFolderItCannotListAsEmpty() {
+        let (easel, pictures) = pictured("In a folder this Mac can't list")
+        let macs = EaselMacs([(easel, pictures)])
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macs.easelsA.path)
+            macs.done()
+        }
+        makeEaselFolderUnlistable(macs.easelsA)
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.syncAToB()
+        expect(loadEasel(easel.id, in: macs.easelsB) == easel, "the other Mac keeps the easel")
+    }
+
+    @MainActor
+    private static func syncSaysWhenItCannotListTheEaselFolder() {
+        let macs = EaselMacs([pictured("In a folder this Mac can't list")])
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macs.easelsA.path)
+            macs.done()
+        }
+        makeEaselFolderUnlistable(macs.easelsA)
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        expect(macs.syncA.error?.contains(SettingsSync.easelsName) == true, "Settings says this Mac can't read its Easels folder")
+    }
+
+    /// A bundle applied while this Mac's easel folder couldn't be listed skipped the other Mac's edits, and was
+    /// remembered: the next write sent the old copies back as the newer ones.
+    @MainActor
+    private static func syncTakesNoBundleWhileItCannotListTheEaselFolder() {
+        let (easel, pictures) = pictured("Edited while the other folder can't be listed")
+        let macs = EaselMacs([(easel, pictures)])
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macs.easelsB.path)
+            macs.done()
+        }
+        var renamed = easel
+        renamed.title = "Renamed on the first Mac"
+        saveEasel(renamed, in: macs.easelsA)
+        makeEaselFolderUnlistable(macs.easelsB)
+        macs.syncAToB()
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macs.easelsB.path)
+        macs.clockB.advance(by: 30)
+        expect(loadEasel(easel.id, in: macs.easelsB)?.title == renamed.title, "once the folder lists again, the second Mac takes the edit")
+    }
+
+    /// A picture this Mac hashed that turns unreadable at the same size and date (its permissions changed) started
+    /// picture tasks without end, and no look ran meanwhile.
+    @MainActor
+    private static func syncStartsNoPictureTaskAgainForAPictureItCannotRead() {
+        let (easel, pictures) = pictured("Unreadable at the same size and date")
+        let macs = EaselMacs([(easel, pictures)])
+        let name = pictures.keys.first!
+        let picture = macs.easelsA.appendingPathComponent("\(easel.id.uuidString)/\(name)")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: picture.path)
+            macs.done()
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: picture.path)
+        try? FileManager.default.removeItem(at: macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(name)"))
+        let held = HeldPictures()
+        held.hold(macs.syncA)
+        // The writing Mac finds the picture gone from its bundle and writes it again after a minute.
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        for _ in 0..<4 { macs.clockA.advance(by: 30) }
+        held.runAll()
+        expect(held.tasks.isEmpty, "the task that couldn't read the picture is not handed over again (\(held.tasks.count) waiting)")
+    }
+
+    /// No easel made yet, so no folder: that is no easels, and the bundle still goes up.
+    @MainActor
+    private static func syncWritesWithNoEaselFolder() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        try? FileManager.default.removeItem(at: macs.easelsA)
+        let tab = macs.a.createTab(url: "https://example.com/written-without-an-easel-folder")
+        macs.syncAToB()
+        expect(macs.b.document.items.contains { $0.id == tab.id }, "the other Mac takes the bundle")
+    }
+
+    /// The other Mac deleted an easel open here, and a later easel failed to save: the try that followed
+    /// found the easel already gone and never closed its windows.
+    @MainActor
+    private static func syncClosesAnOpenEaselDeletedThereAfterAFailedTry() {
+        let open = Easel(id: UUID(uuidString: "00000000-0000-4000-8000-000000000001")!, title: "Open here, deleted there")
+        let macs = EaselMacs([(open, [:])])
+        defer { macs.done() }
+        var canvas: Easel? = open
+        macs.syncB.changeOpenEasel = { id, change in
+            guard id == open.id, let here = canvas else { return false }
+            canvas = change(here)
+            if canvas == nil { EaselFolder.remove(id, in: macs.easelsB) }
+            return true
+        }
+        var removed: Set<UUID> = []
+        macs.syncB.easelsChanged = { removed.formUnion($0) }
+        // An easel sorted after it that the second Mac can't save: a folder has its file's name.
+        let blocked = Easel(id: UUID(uuidString: "FFFFFFFF-FFFF-4FFF-8FFF-FFFFFFFFFFFF")!, title: "Can't be saved")
+        try? FileManager.default.createDirectory(at: macs.easelsB.appendingPathComponent(blocked.id.uuidString + ".json/taken"),
+                                                 withIntermediateDirectories: true)
+        EaselFolder.remove(open.id, in: macs.easelsA)
+        saveEasel(blocked, in: macs.easelsA)
+        macs.syncAToB()
+        EaselFolder.remove(blocked.id, in: macs.easelsB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(removed.contains(open.id), "the try after the failed one still closes the deleted easel's windows")
+    }
+
+    /// The first Mac lacked a picture, then got it back without its easel changing: the second never copied it.
+    @MainActor
+    private static func syncCopiesAPictureTheOtherMacGotBack() {
+        let (easel, pictures) = pictured("Its picture back")
+        let macs = EaselMacs([(easel, [:])])
+        defer { macs.done() }
+        let (name, bytes) = pictures.first!
+        try? bytes.write(to: macs.easelsA.appendingPathComponent("\(easel.id.uuidString)/\(name)"))
+        // The same easel saved again, as its canvas does.
+        saveEasel(easel, in: macs.easelsA)
+        macs.syncAToB()
+        expect((try? Data(contentsOf: macs.easelsB.appendingPathComponent("\(easel.id.uuidString)/\(name)"))) == bytes,
+               "the second Mac copies the picture the first one got back")
+    }
+
+    /// A damaged copy of a picture in the sync folder was kept by every later write, so no Mac could take the bundle.
+    @MainActor
+    private static func syncRewritesADamagedPictureInTheFolder() {
+        let (easel, pictures) = pictured("Its picture damaged in the folder")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let (name, bytes) = pictures.first!
+        let inFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)/\(name)")
+        try? Data("half a pic".utf8).write(to: inFolder)
+        // The writing Mac finds its bundle damaged and writes it again after a minute.
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        for _ in 0..<4 { macs.clockA.advance(by: 30) }
+        expect((try? Data(contentsOf: inFolder)) == bytes, "the write puts the picture's own bytes back")
+    }
+
+    /// Sync carried an easel's sidebar row but not the easel: on the other Mac it opened empty.
+    @MainActor
+    private static func syncCarriesAnEaselAndItsPicture() {
+        let (easel, pictures) = pictured("Moodboard")
+        var lacking = Easel(title: "Names a picture this Mac lacks")
+        lacking.items = [Easel.Item(kind: .image(file: "gone.png"), frame: .init(x: 0, y: 0, width: 10, height: 10))]
+        let macs = EaselMacs([(easel, pictures), (lacking, [:])])
+        defer { macs.done() }
+        let (name, bytes) = pictures.first!
+        expect(loadEasel(easel.id, in: macs.easelsB) == easel, "an easel made on the first Mac is on the second")
+        expect((try? Data(contentsOf: macs.easelsB.appendingPathComponent(easel.id.uuidString).appendingPathComponent(name))) == bytes,
+               "with the picture its card shows")
+        expect(Set(macs.manifest.map { Array($0.files.keys) } ?? []) == Set(SettingsSync.fileNames), "the manifest's files stay the three an older Cra reads")
+        expect(macs.manifest?.easels?["Easels/\(lacking.id.uuidString)/gone.png"] == nil && loadEasel(lacking.id, in: macs.easelsB) == lacking,
+               "a picture the writing Mac lacks is left out of the manifest, and its easel arrives without waiting for it")
+    }
+
+    @MainActor
+    private static func syncMergesEaselEditsFromBothMacs() {
+        let (easel, pictures) = pictured("Plans")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        // The first Mac renames it and writes; the second adds a card before its next look.
+        var onA = easel
+        onA.title = "Plans, renamed"
+        saveEasel(onA, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        var onB = easel
+        onB.items.append(Easel.Item(kind: .rectangle, frame: .init(x: 400, y: 400, width: 50, height: 50)))
+        saveEasel(onB, in: macs.easelsB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        let merged = loadEasel(easel.id, in: macs.easelsB)
+        expect(merged?.title == "Plans, renamed" && merged?.items.map(\.id) == onB.items.map(\.id),
+               "the second Mac takes the first's title and keeps its own card")
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        expect(merged != nil && loadEasel(easel.id, in: macs.easelsA) == merged, "and the first Mac takes the merge")
+    }
+
+    @MainActor
+    private static func syncDeletesAnEaselDeletedOnTheOtherMac() {
+        let (easel, pictures) = pictured("Doomed")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        var removed: Set<UUID> = []
+        macs.syncB.easelsChanged = { removed = $0 }
+        EaselFolder.remove(easel.id, in: macs.easelsA)
+        macs.syncAToB()
+        let fm = FileManager.default
+        expect(!fm.fileExists(atPath: macs.easelsB.appendingPathComponent(easel.id.uuidString + ".json").path)
+               && !fm.fileExists(atPath: macs.easelsB.appendingPathComponent(easel.id.uuidString).path),
+               "an easel deleted in Library on the first Mac is gone from the second, pictures and all")
+        expect(removed == [easel.id], "and the app hears which easel went, to close its tabs")
+    }
+
+    @MainActor
+    private static func syncPrunesADeletedEaselFromTheBundle() {
+        let (easel, pictures) = pictured("Pruned")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        EaselFolder.remove(easel.id, in: macs.easelsA)
+        macs.clockA.advance(by: 10); macs.syncA.poll()
+        let easels = macs.bundle.appendingPathComponent(SettingsSync.easelsName)
+        expect(!FileManager.default.fileExists(atPath: easels.appendingPathComponent(easel.id.uuidString + ".json").path)
+               && !FileManager.default.fileExists(atPath: easels.appendingPathComponent(easel.id.uuidString).path),
+               "the next bundle leaves a deleted easel's file and pictures out of the sync folder")
+    }
+
+    /// An older Cra writes a manifest without `easels`: its easels are unknown, not deleted.
+    @MainActor
+    private static func syncLeavesEaselsAloneForAnOlderCrasBundle() {
+        let (easel, pictures) = pictured("Kept")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let file = macs.easelsB.appendingPathComponent(easel.id.uuidString + ".json")
+        let before = try? Data(contentsOf: file)
+        guard var old = macs.manifest else { return expect(false, "the first Mac wrote a manifest") }
+        old.easels = nil
+        old.device = "Old"; old.deviceID = "old"; old.id = UUID()
+        old.writtenAt = macs.clockB.now.addingTimeInterval(5)
+        macs.write(old)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(macs.syncB.otherDevices.contains("Old"), "the older Cra's bundle is applied")
+        expect(before != nil && (try? Data(contentsOf: file)) == before, "and leaves this Mac's easels as they were")
+        expect(macs.manifest?.easels?["Easels/\(easel.id.uuidString).json"] != nil, "this Mac's next bundle puts its easels back")
+    }
+
+    /// A bundle applies whole: a sidebar row `easel://<id>` never arrives before its easel.
+    @MainActor
+    private static func syncHoldsABundleWhileAnEaselArrives() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Arriving")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        let tab = macs.a.createTab(url: easel.url, title: easel.title)
+        let picture = pictures.keys.first!
+        macs.syncB.downloadStatus = { $0.lastPathComponent == picture ? .notDownloaded : nil }
+        macs.syncAToB()
+        expect(!macs.b.document.items.contains { $0.id == tab.id } && loadEasel(easel.id, in: macs.easelsB) == nil,
+               "while a picture is still downloading, neither the easel nor the sidebar is applied")
+        macs.syncB.downloadStatus = { _ in nil }
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(macs.b.document.items.contains { $0.id == tab.id } && loadEasel(easel.id, in: macs.easelsB) == easel,
+               "once it has arrived, both are")
+    }
+
+    /// Import… adds and overwrites easels, and removes none: the export may come from a Mac that never had them.
+    @MainActor
+    private static func importNeverDeletesAnEasel() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-import-easels-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let exported = dir.appendingPathComponent("export", isDirectory: true)
+        let clock = ManualScheduler()
+        let (easel, pictures) = pictured("Exported")
+        saveEasel(easel, pictures: pictures, in: easelsA)
+        let syncA = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easelsA)
+        syncA.runPictures = picturesInPlace
+        expect(answer { syncA.export(to: exported, done: $0) } == .some(nil), "the first Mac exports")
+        let onlyHere = Easel(title: "Only on this Mac")
+        saveEasel(onlyHere, in: easelsB)
+        var older = easel
+        older.title = "An older copy"
+        saveEasel(older, in: easelsB)
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        syncB.runPictures = picturesInPlace
+        expect(answer { syncB.importBundle(from: exported, done: $0) } == .some(nil), "the second Mac imports it")
+        expect(loadEasel(easel.id, in: easelsB) == easel, "Import… takes the exported easel over this Mac's copy")
+        expect(loadEasel(onlyHere.id, in: easelsB) == onlyHere, "and keeps an easel the export lacks")
+        let bak = (try? Data(contentsOf: easelsB.appendingPathComponent(easel.id.uuidString + ".json.bak")))
+            .flatMap { try? JSONDecoder().decode(Easel.self, from: $0) }
+        expect(bak == older, "and keeps the copy it replaced as .bak, as a save does")
+    }
+
+    /// The Mac that updated Cra second took the first Mac's bundle on a Cra without easel sync. Its first look
+    /// wrote a bundle without them, and the first Mac read that as every easel deleted.
+    @MainActor
+    private static func syncKeepsTheEaselsOfTheMacThatUpdatedFirst() {
+        let (easel, pictures) = pictured("Made on the Mac updated first")
+        let macs = EaselMacs([(easel, pictures)], olderSecond: true)
+        defer { macs.done() }
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        macs.clockA.advance(by: 20); macs.syncA.poll()
+        expect(loadEasel(easel.id, in: macs.easelsA) == easel, "the first Mac keeps its easel when the second updates")
+    }
+
+    /// An older Cra that opens a synced `easel://` row saves a blank easel under its id. After the update,
+    /// the other Mac's real easel replaces it, never the other way round.
+    @MainActor
+    private static func syncTakesTheRealEaselOverABlankCopy() {
+        let (easel, pictures) = pictured("The real one")
+        let macs = EaselMacs([(easel, pictures)], olderSecond: true)
+        defer { macs.done() }
+        saveEasel(Easel(id: easel.id), in: macs.easelsB)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        macs.syncAToB()
+        expect(loadEasel(easel.id, in: macs.easelsB) == easel, "the second Mac's blank copy gives way to the real easel")
+    }
+
+    /// With no history to merge against (Import, Use That Sidebar, a bundle an older Cra wrote last), a blank
+    /// copy of an easel never replaces the real one here.
+    @MainActor
+    private static func importKeepsARealEaselOverABlankCopy() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-import-blank-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let exported = dir.appendingPathComponent("export", isDirectory: true)
+        let clock = ManualScheduler()
+        let (easel, pictures) = pictured("Real on this Mac")
+        saveEasel(Easel(id: easel.id), in: easelsA)
+        saveEasel(easel, pictures: pictures, in: easelsB)
+        let syncA = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "Studio", deviceID: "studio", easels: easelsA)
+        syncA.runPictures = picturesInPlace
+        expect(answer { syncA.export(to: exported, done: $0) } == .some(nil), "the first Mac exports its blank copy")
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clock), clock: clock, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        syncB.runPictures = picturesInPlace
+        _ = answer { syncB.importBundle(from: exported, done: $0) }
+        expect(loadEasel(easel.id, in: easelsB) == easel, "Import… leaves the real easel in place of the blank copy")
+    }
+
+    /// A file the writer's own manifest names goes from the folder after it looked: it writes it again after a minute.
+    @MainActor
+    private static func syncPutsBackAnEaselFileGoneFromTheFolder() {
+        let (easel, pictures) = pictured("Gone from the folder")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        macs.clockA.advance(by: 1); macs.syncA.poll()
+        let file = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString).json")
+        try? FileManager.default.removeItem(at: file)
+        for _ in 0..<4 { macs.clockA.advance(by: 30) }
+        expect(FileManager.default.fileExists(atPath: file.path), "the writing Mac puts the easel's file back")
+    }
+
+    /// An easel file this Mac can't read at the moment (a save landing mid-read, or bytes it can't decode) is
+    /// not left out of the bundle: the other Mac would delete it.
+    @MainActor
+    private static func syncNeverSendsAnUnreadableEaselAsDeleted() {
+        let (easel, pictures) = pictured("Read mid-save")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        try? Data("{ half a save".utf8).write(to: macs.easelsA.appendingPathComponent(easel.id.uuidString + ".json"), options: .atomic)
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.syncAToB()
+        expect(loadEasel(easel.id, in: macs.easelsB) == easel, "the other Mac keeps the easel")
+    }
+
+    /// The second Mac, still on an older Cra, took the first Mac's bundle and wrote one of its own while the first
+    /// slept, then updated. Its bundle names no parent it had easels for, so the first Mac deletes nothing.
+    @MainActor
+    private static func syncKeepsTheEaselsOfTheMacThatUpdatedFirstAfterTheOtherWroteOnAnOlderCra() {
+        let (easel, pictures) = pictured("Made on the Mac updated first")
+        let macs = EaselMacs([(easel, pictures)], olderSecond: true)
+        defer { macs.done() }
+        guard var older = macs.manifest, let first = older.id else { return expect(false, "the first Mac wrote a manifest") }
+        older.easels = nil
+        older.device = "MacBook"; older.deviceID = "macbook"; older.id = UUID(); older.parentIDs = [first]
+        older.writtenAt = older.writtenAt.addingTimeInterval(5)
+        macs.write(older)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        macs.clockA.advance(by: 20); macs.syncA.poll()
+        expect(loadEasel(easel.id, in: macs.easelsA) == easel, "the first Mac keeps its easel")
+    }
+
+    /// An easel file this Mac can't decode at launch still goes up as the copy the folder has, which the
+    /// other Mac's base has too: it is never sent as deleted.
+    @MainActor
+    private static func syncNeverSendsAnUnreadableEaselAsDeletedAfterARelaunch() {
+        let (easel, pictures) = pictured("Undecodable after a relaunch")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let relaunched = relaunchWithAnUnreadableEasel(easel, macs)
+        defer { relaunched.disable() }
+        macs.clockB.advance(by: 30); macs.syncB.poll()
+        expect(loadEasel(easel.id, in: macs.easelsB) == easel, "the other Mac keeps the easel")
+    }
+
+    /// No copy to send in its place: the Mac writes nothing and Settings names the file.
+    @MainActor
+    private static func syncHoldsItsBundleWhileAnUnreadableEaselHasNoCopyToSend() {
+        let (easel, pictures) = pictured("Undecodable, and gone from the folder")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let relaunched = relaunchWithAnUnreadableEasel(easel, macs, keepFolderCopy: false)
+        defer { relaunched.disable() }
+        macs.clockA.advance(by: 90)
+        expect(relaunched.error?.contains(easel.id.uuidString + ".json") == true, "Settings names the easel file it can't read")
+        expect(macs.manifest?.deviceID == "studio" && macs.manifest?.easels?["Easels/\(easel.id.uuidString).json"] != nil,
+               "and the folder's bundle still names the easel")
+    }
+
+    // MARK: Links a peer plants in a shared sync folder
+
+    /// A folder outside the sync folder, with a file and a subfolder in it, that a peer's link points at.
+    private static func outsideFolder(in macs: EaselMacs) -> URL {
+        let outside = macs.dir.appendingPathComponent("outside", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outside.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try? Data("keep".utf8).write(to: outside.appendingPathComponent("keep.txt"))
+        try? Data("x".utf8).write(to: outside.appendingPathComponent("sub/x.txt"))
+        return outside
+    }
+
+    /// A peer replaces the bundle's `Easels` with a link to a folder elsewhere: writes and prune never reach it.
+    @MainActor
+    private static func syncNeverFollowsALinkedEaselsFolder() {
+        let macs = EaselMacs([pictured("Synced")])
+        defer { macs.done() }
+        let outside = outsideFolder(in: macs)
+        let easels = macs.bundle.appendingPathComponent(SettingsSync.easelsName)
+        try? FileManager.default.removeItem(at: easels)
+        try? FileManager.default.createSymbolicLink(at: easels, withDestinationURL: outside)
+        // The folder now lacks what the manifest names: the writing Mac writes its bundle again after a minute.
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.clockA.advance(by: 120)
+        let left = (try? FileManager.default.subpathsOfDirectory(atPath: outside.path))?.sorted()
+        expect(left == ["keep.txt", "sub", "sub/x.txt"], "the folder the link points at keeps its files and gets none (\(left ?? []))")
+    }
+
+    /// A peer replaces an easel's picture folder in the bundle with a link: no picture is written through it.
+    @MainActor
+    private static func syncWritesNoPictureThroughALinkedEaselFolder() {
+        let (easel, pictures) = pictured("Its pictures relinked")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        let outside = outsideFolder(in: macs)
+        let pictureFolder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(easel.id.uuidString)")
+        try? FileManager.default.removeItem(at: pictureFolder)
+        try? FileManager.default.createSymbolicLink(at: pictureFolder, withDestinationURL: outside)
+        // The folder now lacks what the manifest names: the writing Mac writes its bundle again after a minute.
+        _ = macs.a.createTab(url: "https://example.com/a-change-to-write")
+        macs.clockA.advance(by: 120)
+        let left = (try? FileManager.default.subpathsOfDirectory(atPath: outside.path))?.sorted()
+        expect(left == ["keep.txt", "sub", "sub/x.txt"], "the folder the link points at gets no picture and loses nothing (\(left ?? []))")
+    }
+
+    /// A peer's bundle names a picture that is a link to a file elsewhere on this Mac, with that file's hash:
+    /// it is never read through the link and copied in.
+    @MainActor
+    private static func syncNeverCopiesInALinkedPicture() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let secret = macs.dir.appendingPathComponent("secret.txt")
+        let secretBytes = Data("a file of this Mac's".utf8)
+        try? secretBytes.write(to: secret)
+        let hash = { (data: Data) in SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        let name = UUID().uuidString + ".png"
+        let planted = Easel(title: "Planted", items: [Easel.Item(kind: .image(file: name), frame: .init(x: 0, y: 0, width: 10, height: 10))])
+        let json = (try? JSONEncoder().encode(planted)) ?? Data()
+        let folder = macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(planted.id.uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? json.write(to: macs.bundle.appendingPathComponent("\(SettingsSync.easelsName)/\(planted.id.uuidString).json"))
+        try? FileManager.default.createSymbolicLink(at: folder.appendingPathComponent(name), withDestinationURL: secret)
+        guard var m = macs.manifest else { return expect(false, "the first Mac wrote a manifest") }
+        m.easels?["\(SettingsSync.easelsName)/\(planted.id.uuidString).json"] = hash(json)
+        m.easels?["\(SettingsSync.easelsName)/\(planted.id.uuidString)/\(name)"] = hash(secretBytes)
+        m.device = "Mini"; m.deviceID = "mini"; m.id = UUID()
+        m.writtenAt = macs.clockB.now.addingTimeInterval(5)
+        macs.write(m)
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(!FileManager.default.fileExists(atPath: macs.easelsB.appendingPathComponent("\(planted.id.uuidString)/\(name)").path),
+               "the file the link points at is not copied into this Mac's easels")
+    }
+
+    /// Use That Sidebar that fails on an easel says so once: the question comes back only for a new bundle.
+    @MainActor
+    private static func useThatSidebarThatFailsAsksAgainOnlyForANewBundle() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-choice-\(UUID().uuidString)", isDirectory: true)
+        let easelsA = dir.appendingPathComponent("a/Easels", isDirectory: true), easelsB = dir.appendingPathComponent("b/Easels", isDirectory: true)
+        let root = dir.appendingPathComponent("sync", isDirectory: true)
+        try? FileManager.default.createDirectory(at: easelsB, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: easelsB.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: easelsB.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let (easel, pictures) = pictured("Can't be saved on the second Mac")
+        saveEasel(easel, pictures: pictures, in: easelsA)
+        let a = SidebarStore(clock: clockA)
+        let syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio", easels: easelsA)
+        let syncB = SettingsSyncService(store: SidebarStore(clock: clockB), clock: clockB, device: "MacBook", deviceID: "macbook", easels: easelsB)
+        syncA.runPictures = picturesInPlace
+        syncB.runPictures = picturesInPlace
+        defer { syncA.disable(); syncB.disable() }
+        expect(syncA.enable(folder: root) == .synced, "the first Mac syncs through a folder")
+        guard case .bundleFound = syncB.enable(folder: root) else { return expect(false, "the second Mac is asked once") }
+        syncB.useRemote()
+        clockB.advance(by: 30)
+        expect(syncB.pendingChoice == nil && syncB.error != nil, "a failed Use That Sidebar shows its error and doesn't ask again")
+        clockA.advance(by: 10)
+        _ = a.createTab(url: "https://example.com/a-later-bundle")
+        syncA.poll()
+        clockB.advance(by: 30)
+        expect(syncB.pendingChoice != nil, "a later bundle from the other Mac asks again")
+    }
+
+    /// The first Mac relaunched with `easel`'s file undecodable, after a few writes so each Mac's history and
+    /// sync.json are on disk, and one look.
+    @MainActor
+    private static func relaunchWithAnUnreadableEasel(_ easel: Easel, _ macs: EaselMacs, keepFolderCopy: Bool = true) -> SettingsSyncService {
+        _ = macs.a.createTab(url: "https://example.com/one"); macs.syncAToB()
+        macs.syncB.flushSaves()
+        _ = macs.a.createTab(url: "https://example.com/two"); macs.clockA.advance(by: 10); macs.syncA.poll()
+        macs.syncA.flushSaves()
+        try? Data("{ not an easel".utf8).write(to: macs.easelsA.appendingPathComponent(easel.id.uuidString + ".json"), options: .atomic)
+        if !keepFolderCopy { try? FileManager.default.removeItem(at: macs.bundle.appendingPathComponent("Easels/\(easel.id.uuidString).json")) }
+        // Quit: the first Mac's service stops, and its sync.json and history stay as it saved them.
+        let saved = ["sync.json", "sync-history.json"].map { (AppPaths.file($0), try? Data(contentsOf: AppPaths.file($0))) }
+        macs.syncA.disable()
+        for (url, data) in saved { try? data?.write(to: url) }
+        let relaunched = SettingsSyncService(store: macs.a, clock: macs.clockA, device: "Studio", deviceID: "studio", easels: macs.easelsA)
+        relaunched.runPictures = picturesInPlace
+        relaunched.start()
+        _ = macs.a.createTab(url: "https://example.com/three")
+        macs.clockA.advance(by: 30)
+        return relaunched
+    }
+
+    /// An easel this Mac can't save leaves the bundle untaken, and Settings says why rather than showing sync as fine.
+    @MainActor
+    private static func syncSaysWhenAnEaselCannotBeSaved() {
+        let macs = EaselMacs()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macs.easelsB.path)
+            macs.done()
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: macs.easelsB.path)
+        let (easel, pictures) = pictured("Can't be saved")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.syncAToB()
+        expect(macs.syncB.error != nil, "sync on the second Mac reports the easel it couldn't save")
+        let exported = macs.dir.appendingPathComponent("export", isDirectory: true)
+        expect(answer { macs.syncA.export(to: exported, done: $0) } == .some(nil), "the first Mac exports")
+        expect(answer { macs.syncB.importBundle(from: exported, done: $0) }??.isEmpty == false, "Import… reports the easels it couldn't save")
+    }
+
+    /// A manifest path that names no easel file or picture is never read or written, here or in the folder.
+    @MainActor
+    private static func syncNeverTouchesABadEaselPath() {
+        let macs = EaselMacs([pictured("Safe")])
+        defer { macs.done() }
+        let planted = Data("not an easel".utf8)
+        let target = macs.bundle.appendingPathComponent("escape.json")
+        try? planted.write(to: target)
+        guard var bad = macs.manifest else { return expect(false, "the first Mac wrote a manifest") }
+        bad.easels?["Easels/../escape.json"] = SHA256.hash(data: planted).map { String(format: "%02x", $0) }.joined()
+        bad.device = "Mini"; bad.deviceID = "mini"; bad.id = UUID()
+        bad.writtenAt = macs.clockB.now.addingTimeInterval(5)
+        macs.write(bad)
+        let reads = macs.syncB.easelReads
+        macs.clockB.advance(by: 10); macs.syncB.poll()
+        expect(!macs.syncB.otherDevices.contains("Mini"), "a manifest naming a path outside the easels is not applied")
+        expect(macs.syncB.easelReads == reads, "and the path is never read")
+        expect(!FileManager.default.fileExists(atPath: macs.easelsB.deletingLastPathComponent().appendingPathComponent("escape.json").path),
+               "nothing is written outside this Mac's easel folder")
+        for _ in 0..<25 { macs.clockB.advance(by: 30) }
+        expect(macs.manifest?.deviceID == "macbook" && macs.manifest?.easels?.keys.allSatisfy { SettingsSync.easelPath($0) != nil } == true,
+               "the Mac puts the folder right with a bundle naming easel paths only")
+        expect((try? Data(contentsOf: target)) == planted, "and leaves the file the bad path named as it was")
+    }
+
+    /// An easel saved here goes up a few seconds later, like a sidebar change: no easel code calls sync. The
+    /// watcher on the easel folder reports the save (`easelFolderWatcherReportsASave`).
+    @MainActor
+    private static func syncWritesSoonAfterAnEaselChange() {
+        let macs = EaselMacs()
+        defer { macs.done() }
+        let (easel, pictures) = pictured("Made after sync was on")
+        saveEasel(easel, pictures: pictures, in: macs.easelsA)
+        macs.syncA.changedHere()
+        macs.clockA.advance(by: SettingsSync.writeSoonDelay)
+        expect(macs.manifest?.easels?["Easels/\(easel.id.uuidString).json"] != nil, "an easel saved here goes up 3 s later, before the next look")
+    }
+
+    /// The watcher sync puts on the easel folder reports a save in it. It waits on the kernel's event, not on the
+    /// app's clock; the bound only ends a run in which the event never comes.
+    @MainActor
+    private static func easelFolderWatcherReportsASave() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cra-easel-watch-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let reported = DispatchSemaphore(value: 0)
+        let watcher = SettingsSyncService.watch(folder, on: DispatchQueue(label: "easel-watch-test")) { reported.signal() }
+        defer { watcher?.cancel() }
+        saveEasel(Easel(title: "Saved while watched"), in: folder)
+        expect(reported.wait(timeout: .now() + 30) == .success, "a save in the easel folder is reported")
+    }
+
+    /// An idle look reads, hashes and decodes no easel or picture, on the Mac that wrote and on the one that applied.
+    @MainActor
+    private static func syncLooksWithoutReadingAnIdleEasel() {
+        let macs = EaselMacs([pictured("One"), pictured("Two")])
+        defer { macs.done() }
+        macs.syncA.poll(); macs.syncB.poll()
+        let (readsA, decodesA) = (macs.syncA.easelReads, macs.syncA.easelDecodes)
+        let (readsB, decodesB) = (macs.syncB.easelReads, macs.syncB.easelDecodes)
+        for _ in 0..<3 { macs.clockA.advance(by: 30); macs.clockB.advance(by: 30) }
+        expect(macs.syncA.easelReads == readsA && macs.syncA.easelDecodes == decodesA,
+               "an idle look on the writing Mac reads no easel (\(macs.syncA.easelReads - readsA) reads, \(macs.syncA.easelDecodes - decodesA) decodes)")
+        expect(macs.syncB.easelReads == readsB && macs.syncB.easelDecodes == decodesB,
+               "nor on the Mac that applied it (\(macs.syncB.easelReads - readsB) reads, \(macs.syncB.easelDecodes - decodesB) decodes)")
+    }
+
+    /// An easel open in a tab is up to 0.4 s ahead of its file: the change goes onto its canvas, which saves it.
+    @MainActor
+    private static func syncChangesAnOpenEaselOnItsCanvas() {
+        let (easel, pictures) = pictured("Open in a tab")
+        let macs = EaselMacs([(easel, pictures)])
+        defer { macs.done() }
+        var canvas = easel
+        macs.syncB.changeOpenEasel = { id, change in
+            guard id == easel.id else { return false }
+            if let changed = change(canvas) { canvas = changed }
+            return true
+        }
+        var onA = easel
+        onA.title = "Renamed on the other Mac"
+        saveEasel(onA, in: macs.easelsA)
+        let file = macs.easelsB.appendingPathComponent(easel.id.uuidString + ".json")
+        let before = try? Data(contentsOf: file)
+        macs.syncAToB()
+        expect(canvas.title == "Renamed on the other Mac", "an easel open in a tab takes the change on its canvas")
+        expect(before != nil && (try? Data(contentsOf: file)) == before, "and sync writes no file for it: the canvas saves it")
+    }
+
+    // promise: #921
+    /// The dead tab reported on X (27 Nov 2026): two tabs made into a split on one Mac while the other
+    /// Mac looked at them. The merge gave each tab the other Mac's parent, Today, and kept the split with
+    /// no panes: a row with only a close button that did nothing, synced to every Mac.
+    @MainActor
+    private static func syncKeepsASplitMadeWhileTheOtherMacLooked() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cra-sync-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clockA = ManualScheduler(), clockB = ManualScheduler(now: clockA.now)
+        let a = AppComposition(clock: clockA).store
+        let first = a.createTab(url: "https://codepen.io/vscode", title: "VS Code Extension – CodePen")
+        let second = a.createTab(url: "https://codepen.io/mcp", title: "MCP – CodePen")
+        let syncA = SettingsSyncService(store: a, clock: clockA, device: "Studio", deviceID: "studio")
+        expect(syncA.enable(folder: folder) == .synced, "split sync: the first Mac writes its bundle")
+        let b = SidebarStore(clock: clockB)
+        let syncB = SettingsSyncService(store: b, clock: clockB, device: "MacBook", deviceID: "macbook")
+        guard case .bundleFound = syncB.enable(folder: folder) else { return expect(false, "split sync: the second Mac finds the bundle") }
+        syncB.useRemote()
+        expect(b.item(first.id) != nil && b.item(second.id) != nil, "split sync: both Macs have both tabs")
+
+        // The second Mac looks at both tabs and writes; the first, not having looked yet, splits them.
+        clockB.advance(by: 10)
+        b.selectTab(first.id)
+        b.selectTab(second.id)
+        syncB.poll()
+        clockA.advance(by: 20)
+        guard let split = a.createSplit(with: [first.id, second.id]) else { return expect(false, "split sync: the split is made") }
+        syncA.poll()
+        syncB.poll()
+        for (mac, store) in [("first", a), ("second", b)] {
+            expect(store.item(split.id)?.children == [first.id, second.id],
+                   "split sync: the split keeps both its panes on the \(mac) Mac, got \(store.item(split.id)?.children.count ?? -1)")
+            expect(store.item(first.id)?.parentID == split.id && store.item(second.id)?.parentID == split.id,
+                   "split sync: both tabs are in the split on the \(mac) Mac")
+            expect(store.document.items.allSatisfy { !$0.isSplit || $0.children.count >= 2 }, "split sync: no split without panes on the \(mac) Mac")
+            expect(store.integrityProblems().isEmpty, "split sync: the \(mac) Mac's sidebar is sound: \(store.integrityProblems())")
+        }
+        syncA.disable()
+        syncB.disable()
+    }
+
+    // promise: #921
+    /// A split with no panes, or one, as a Cra before the fix synced to every Mac: it goes when the
+    /// sidebar loads or a bundle is applied, its pane in its place, so the row that could not be closed
+    /// is gone.
+    @MainActor
+    private static func thinSplitsGoOnLoad() {
+        let source = AppComposition(clock: ManualScheduler()).store
+        _ = source.createTab(url: "https://codepen.io/before", title: "Before")
+        let lone = source.createTab(url: "https://codepen.io/lone", title: "Lone")
+        _ = source.createTab(url: "https://codepen.io/after", title: "After")
+        let today = source.focusedSpace.todayContainerID
+        let listed = source.item(today)?.children ?? []
+        var doc = source.document
+        var empty = SidebarItem.split(parent: today)
+        var single = SidebarItem.split(parent: today)
+        single.children = [lone.id]
+        empty.children = []
+        doc.items = doc.items.map { it in
+            var it = it
+            if it.id == lone.id { it.parentID = single.id }
+            // Where the lone tab was, its split, and an empty one after it.
+            if it.id == today { it.children = it.children.flatMap { $0 == lone.id ? [single.id, empty.id] : [$0] } }
+            return it
+        } + [empty, single]
+
+        let synced = SidebarStore(clock: ManualScheduler())
+        synced.replace(document: doc)
+        expect(synced.item(empty.id) == nil && synced.item(single.id) == nil, "thin splits: an applied bundle's splits without two panes go")
+        expect(synced.item(today)?.children == listed, "thin splits: the lone pane takes its split's place")
+        expect(synced.item(lone.id)?.parentID == today && synced.integrityProblems().isEmpty, "thin splits: the sidebar is sound after a bundle: \(synced.integrityProblems())")
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode(doc).write(to: AppPaths.file("sidebar.json"))
+        let launched = SidebarStore(clock: ManualScheduler())
+        expect(launched.item(empty.id) == nil && launched.item(single.id) == nil, "thin splits: a saved sidebar's splits without two panes go at launch")
+        expect(launched.item(today)?.children == listed, "thin splits: at launch the lone pane takes its split's place")
+        expect(launched.integrityProblems().isEmpty, "thin splits: the sidebar is sound after a launch")
     }
 
     /// A Blank Window is one Mac's window: its sidebar never goes to the other Mac, and a bundle
@@ -3978,6 +7265,32 @@ enum StoreTests {
         let small = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { r in NSColor.red.setFill(); r.fill(); return true }
         let smallPNG = ZenImporter.faviconPNG(small).flatMap(NSBitmapImageRep.init(data:))
         expect(smallPNG?.pixelsWide == 16, "a 16 px favicon stays 16 px")
+    }
+
+    // promise: #868
+    /// Air Traffic Control's `rerouteTab` moves a newly opened non-pinned Today tab to the target
+    /// space and follows it while keeping the originating space's prior tab (`DSA Sheet`) selected,
+    /// and refuses to move pinned/favorite tabs or target standalone/missing spaces (#868).
+    @MainActor
+    private static func rerouteTabKeepsOriginSelection() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let pro = store.orderedSpaces[0].id
+        let personal = store.createSpace(title: "Personal", emoji: "👤").id
+        let sheet = store.createTab(url: "https://docs.google.com/sheet", in: pro, pinned: true, select: true)
+        let redirected = store.createTab(url: "https://www.scaler.com/problems/1", in: pro, select: true)
+        expect(store.selectedTabID(in: pro) == redirected.id, "newly opened foreground tab is selected in Pro")
+        store.rerouteTab(redirected.id, toSpace: personal, window: nil)
+        expect(store.spaceID(ofItem: redirected.id) == personal && store.focusedSpaceID == personal
+               && store.selectedTabID(in: personal) == redirected.id,
+               "rerouteTab moves the Today tab to Personal and switches focus there")
+        expect(store.selectedTabID(in: pro) == sheet.id,
+               "originating space Pro still has DSA Sheet selected instead of going blank")
+
+        store.rerouteTab(sheet.id, toSpace: personal, window: nil)
+        expect(store.spaceID(ofItem: sheet.id) == pro, "rerouteTab never moves a pinned tab")
+        let blank = store.addBlankWindow(frame: nil).focusedSpaceID!
+        store.rerouteTab(redirected.id, toSpace: blank, window: nil)
+        expect(store.spaceID(ofItem: redirected.id) == personal, "rerouteTab never targets a standalone space")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

@@ -60,7 +60,12 @@ enum ExtensionPopupWindowTests {
         expect(!bubble.isVisible, "dismissal closes the visible Chrome bubble asynchronously")
 
         closesOnAClickElsewhere()
+        await staysOpenForItsDevTools()
+        // Before the drag tests: they dequeue events themselves, after which an await never resumes in this harness.
+        await takesItsBubbleBackFromChrome()
         hangsUnderItsButtonUntilDragged()
+        keepsItsPageInTheFrameWhenChromeMovesItMidDrag()
+        dragsItsTitleBarWithThePageItself()
         keepsADragWithARealMouse()
         print("Extension popup window: \(checks) checks passed")
     }
@@ -122,6 +127,32 @@ enum ExtensionPopupWindowTests {
         expect(thirdFrame.isVisible && third.parent === thirdFrame, "an earlier popup's watch doesn't close a later one")
         thirdFrame.performClose(nil)
         expect(ExtensionPopupWindow.shownAnchor == nil, "the close button ends it too")
+    }
+
+    // promise: #701
+    /// Inspect in a popup's menu opens Chromium's own DevTools window ("DevTools - chrome-extension://…"), which
+    /// takes focus: the popup stays open while it's inspected, as in Chrome, and clicks in DevTools keep it. Cra
+    /// closed it as for any other window, so Inspect did nothing. Another window taking focus still closes it.
+    @MainActor
+    private static func staysOpenForItsDevTools() async {
+        let anchor = NSPoint(x: -9800, y: -9700)
+        let (page, frame) = presentPopup(anchor: anchor)
+        // The observer leaves the first moments alone (the click that opened the popup can still be making its window key).
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let devtools = NSWindow(contentRect: NSRect(x: -11000, y: -10000, width: 600, height: 400),
+                                styleMask: [.titled], backing: .buffered, defer: false)
+        devtools.title = "DevTools - chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html"
+        devtools.isReleasedWhenClosed = false
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: devtools)
+        expect(frame.isVisible && page.parent === frame, "the popup's DevTools taking focus keep it open")
+        NSApp.sendEvent(click(at: NSPoint(x: 100, y: 100), in: devtools))
+        expect(frame.isVisible && page.parent === frame, "a click in its DevTools keeps it open")
+        let other = NSWindow(contentRect: NSRect(x: -12000, y: -10000, width: 300, height: 200),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        other.title = "Cra"
+        other.isReleasedWhenClosed = false
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: other)
+        expect(!frame.isVisible && page.parent == nil, "another of Cra's windows taking focus closes it")
     }
 
     // promise: #634
@@ -246,6 +277,184 @@ enum ExtensionPopupWindowTests {
         NotificationCenter.default.post(name: NSWindow.willMoveNotification, object: frame)
         frame.setFrameOrigin(NSPoint(x: frame.frame.minX + 300, y: frame.frame.minY + 50))
         expect(ExtensionPopupWindow.placement(anchor: anchor, width: 300) == wanted, "a carried move after the drop changes nothing")
+        frame.performClose(nil)
+    }
+
+    // promise: #786
+    /// Chrome moves its bubble back under its hidden toolbar button whenever the popup page resizes (and may on its own
+    /// window's other changes). In the middle of a drag the frame kept moving with the pointer but left the bubble where
+    /// Chrome put it until the drop: the page trailed behind its frame and a click there missed (MotasR, 0.1.57). While
+    /// the title bar is dragged, a bubble Chrome moved goes straight back into the frame, the frame staying put.
+    @MainActor
+    private static func keepsItsPageInTheFrameWhenChromeMovesItMidDrag() {
+        // Keep the drag inside the visible screen. With an offscreen anchor the frame opens at
+        // the bottom-left limit, where AppKit can constrain a synthetic window move.
+        guard let screen = NSScreen.main?.visibleFrame else { fatalError("Popup drag needs a display") }
+        let anchor = NSPoint(x: screen.maxX - 24, y: screen.maxY - 24)
+        let pointerStart = NSPoint(x: anchor.x - 150, y: anchor.y - 6)
+        let chromeOrigin = NSPoint(x: screen.minX + 8, y: screen.minY + 8)
+        var pointer = pointerStart, held = false
+        ExtensionPopupWindow.pointer = { pointer }
+        ExtensionPopupWindow.leftButtonDown = { held }
+        defer {
+            ExtensionPopupWindow.pointer = { NSEvent.mouseLocation }
+            ExtensionPopupWindow.leftButtonDown = { NSEvent.pressedMouseButtons & 1 != 0 }
+            UserDefaults.standard.removeObject(forKey: "extensionPopupWindowOffset")
+        }
+        let (page, frame) = presentPopup(anchor: anchor)
+        let inFrame = NSPoint(x: page.frame.minX - frame.frame.minX, y: page.frame.maxY - frame.frame.maxY)
+        func offset() -> NSPoint { NSPoint(x: page.frame.minX - frame.frame.minX, y: page.frame.maxY - frame.frame.maxY) }
+        let titleBar = NSPoint(x: frame.frame.width / 2, y: frame.frame.height - 6)
+        held = true
+        makeCurrent(.leftMouseDragged, at: titleBar, in: frame)
+        NotificationCenter.default.post(name: NSWindow.willMoveNotification, object: frame)
+        makeCurrentAppKitDefined(in: frame)
+        let start = frame.frame.origin
+        for step in 1...3 {
+            let d = NSPoint(x: CGFloat(step) * -40, y: CGFloat(step) * -20)
+            pointer = NSPoint(x: pointerStart.x + d.x, y: pointerStart.y + d.y)
+            frame.setFrameOrigin(NSPoint(x: start.x + d.x, y: start.y + d.y))
+            // Chrome re-anchors its bubble where its own hidden button is.
+            page.setFrameOrigin(chromeOrigin)
+            expect(offset() == inFrame, "the page stays in its frame while Chrome moves it mid-drag (step \(step): \(NSStringFromPoint(offset())), was \(NSStringFromPoint(inFrame)))")
+            expect(frame.frame.origin == NSPoint(x: start.x + d.x, y: start.y + d.y), "the frame stays with the pointer (step \(step))")
+        }
+        // Chrome takes the bubble onto its own window without moving it, and the frame moves on: the page goes with it,
+        // in place, not at the offset it was left at (MotasR's recording: it trailed until the drop, then lined up).
+        let chrome = NSWindow(contentRect: NSRect(x: -11000, y: -11000, width: 400, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        chrome.isReleasedWhenClosed = false
+        chrome.orderFront(nil)
+        defer { chrome.orderOut(nil) }
+        for step in 4...5 {
+            page.parent?.removeChildWindow(page)
+            chrome.addChildWindow(page, ordered: .above)
+            let d = NSPoint(x: CGFloat(step) * -40, y: CGFloat(step) * -20)
+            pointer = NSPoint(x: pointerStart.x + d.x, y: pointerStart.y + d.y)
+            frame.setFrameOrigin(NSPoint(x: start.x + d.x, y: start.y + d.y))
+            expect(page.parent === frame, "the frame takes its bubble back as it moves (step \(step))")
+            expect(offset() == inFrame, "the page moves with its frame though Chrome took it mid-drag (step \(step): \(NSStringFromPoint(offset())), was \(NSStringFromPoint(inFrame)))")
+        }
+        // Chrome resizes it too (the page grew): the page's top stays under the title bar.
+        page.setFrame(NSRect(origin: chromeOrigin, size: NSSize(width: page.frame.width, height: page.frame.height + 40)), display: false)
+        expect(offset() == inFrame, "a page that grows mid-drag stays under the title bar (\(NSStringFromPoint(offset())))")
+        held = false
+        makeCurrent(.leftMouseUp, at: titleBar, in: frame)
+        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: frame)
+        frame.performClose(nil)
+    }
+
+    // promise: #786
+    /// Cra drags the frame by its title bar itself and moves the page with it in the same step: on macOS 27.2 the page
+    /// trailed behind the frame in a drag macOS ran, and the click after missed (MotasR, 0.1.58; not on macOS 26). Each
+    /// step of the drag finds the page in its frame, also when Chrome took the bubble in between; the frame follows the
+    /// pointer, and the drop is where later popups hang.
+    @MainActor
+    private static func dragsItsTitleBarWithThePageItself() {
+        var pointer = NSPoint(x: -9900, y: -9690), held = false
+        let saved = ExtensionPopupWindow.nextDragEvent
+        ExtensionPopupWindow.pointer = { pointer }
+        ExtensionPopupWindow.leftButtonDown = { held }
+        defer {
+            ExtensionPopupWindow.pointer = { NSEvent.mouseLocation }
+            ExtensionPopupWindow.leftButtonDown = { NSEvent.pressedMouseButtons & 1 != 0 }
+            ExtensionPopupWindow.nextDragEvent = saved
+            UserDefaults.standard.removeObject(forKey: "extensionPopupWindowOffset")
+        }
+        let chrome = NSWindow(contentRect: NSRect(x: -11000, y: -11000, width: 400, height: 300), styleMask: [.borderless], backing: .buffered, defer: false)
+        chrome.isReleasedWhenClosed = false
+        chrome.orderFront(nil)
+        defer { chrome.orderOut(nil) }
+        let anchor = NSPoint(x: -9800, y: -9700)
+        let (page, frame) = presentPopup(anchor: anchor)
+        func offset() -> NSPoint { NSPoint(x: page.frame.minX - frame.frame.minX, y: page.frame.maxY - frame.frame.maxY) }
+        let inFrame = offset(), start = frame.frame.origin, size = frame.frame.size
+        let titleBar = NSPoint(x: frame.frame.width / 2, y: frame.frame.height - 6)
+        let moves = [NSPoint(x: -40, y: -20), NSPoint(x: -80, y: -40), NSPoint(x: -150, y: -10), NSPoint(x: -160, y: -80)]
+        var step = 0, checked = 0
+        ExtensionPopupWindow.nextDragEvent = { window in
+            if step > 0 {
+                let d = moves[step - 1]
+                expect(frame.frame.origin == NSPoint(x: start.x + d.x, y: start.y + d.y),
+                       "the frame follows the pointer (step \(step): \(NSStringFromPoint(frame.frame.origin)))")
+                expect(page.parent === frame && offset() == inFrame,
+                       "the page is in its frame at every step (step \(step): \(NSStringFromPoint(offset())), was \(NSStringFromPoint(inFrame)))")
+                checked += 1
+            }
+            guard step < moves.count else { return nil }
+            // Chrome takes its bubble back in the middle of the drag.
+            if step == 2 { page.parent?.removeChildWindow(page); chrome.addChildWindow(page, ordered: .above) }
+            let d = moves[step]
+            step += 1
+            pointer = NSPoint(x: -9900 + d.x, y: -9690 + d.y)
+            let last = step == moves.count
+            if last { held = false }
+            return NSEvent.mouseEvent(with: last ? .leftMouseUp : .leftMouseDragged, location: titleBar, modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                      context: nil, eventNumber: 0, clickCount: 1, pressure: last ? 0 : 1)
+        }
+        held = true
+        frame.sendEvent(click(at: titleBar, in: frame, timestamp: ProcessInfo.processInfo.systemUptime))
+        expect(checked == moves.count - 1, "every step of the drag was checked (\(checked) of \(moves.count - 1))")
+        let dropped = NSPoint(x: start.x - 160, y: start.y - 80)
+        expect(frame.frame.origin == dropped, "the frame is where the pointer let go (\(NSStringFromPoint(frame.frame.origin)))")
+        expect(page.parent === frame && offset() == inFrame, "the page is in its frame after the drop (\(NSStringFromPoint(offset())))")
+        let wanted = NSPoint(x: anchor.x - 300 + (dropped.x - (anchor.x - size.width)), y: dropped.y + size.height)
+        expect(ExtensionPopupWindow.placement(anchor: anchor, width: 300) == wanted, "later popups hang where it was dropped")
+        frame.performClose(nil)
+    }
+
+    // promise: #786
+    /// Chrome puts its bubble back on its own hidden window whenever that window's focus, visibility or Space changes
+    /// (NativeWidgetNSWindowBridge::OrderChildren adds every child whose parent isn't it). Left there, the bubble no
+    /// longer moved with the frame: dragging the popup left its page behind, or let it trail, and a page left outside
+    /// its frame missed clicks. The frame takes it back as soon as Chrome may have taken it, and at the latest when
+    /// its title bar is pressed; a drag that went on without it ends with the page back in the frame.
+    @MainActor
+    private static func takesItsBubbleBackFromChrome() async {
+        var pointer = NSPoint(x: -9900, y: -9690), held = false
+        ExtensionPopupWindow.pointer = { pointer }
+        ExtensionPopupWindow.leftButtonDown = { held }
+        defer {
+            ExtensionPopupWindow.pointer = { NSEvent.mouseLocation }
+            ExtensionPopupWindow.leftButtonDown = { NSEvent.pressedMouseButtons & 1 != 0 }
+            UserDefaults.standard.removeObject(forKey: "extensionPopupWindowOffset")
+        }
+        let chrome = NSWindow(contentRect: NSRect(x: -11000, y: -11000, width: 400, height: 300),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        chrome.isReleasedWhenClosed = false
+        chrome.orderFront(nil)
+        defer { chrome.orderOut(nil) }
+        let anchor = NSPoint(x: -9800, y: -9700)
+        let (page, frame) = presentPopup(anchor: anchor)
+        let inFrame = NSPoint(x: page.frame.minX - frame.frame.minX, y: page.frame.minY - frame.frame.minY)
+        func stolen() { page.parent?.removeChildWindow(page); chrome.addChildWindow(page, ordered: .above) }
+
+        // A page takes focus (ChromiumPageFocus tells Chrome's window delegate, and Chrome orders its children).
+        stolen()
+        NotificationCenter.default.post(name: ExtensionPopupWindow.chromeFocusMayHaveChanged, object: nil)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        expect(page.parent === frame, "the frame takes its bubble back after Chrome's window changed focus")
+
+        // Taken again without a word: a press on the title bar takes it back before the drag starts.
+        stolen()
+        NSApp.sendEvent(click(at: NSPoint(x: frame.frame.width / 2, y: frame.frame.height - 6), in: frame))
+        expect(page.parent === frame, "a press on the title bar takes the bubble back before AppKit moves the frame")
+
+        // Taken in the middle of a drag: the frame moves on alone, and the drop puts the page back in it.
+        held = true
+        makeCurrent(.leftMouseDragged, at: NSPoint(x: frame.frame.width / 2, y: frame.frame.height - 6), in: frame)
+        NotificationCenter.default.post(name: NSWindow.willMoveNotification, object: frame)
+        expect(page.parent === frame, "the drag starts with the bubble in the frame")
+        stolen()
+        let start = frame.frame.origin
+        pointer = NSPoint(x: -9900 - 120, y: -9690 - 60)
+        frame.setFrameOrigin(NSPoint(x: start.x - 120, y: start.y - 60))
+        held = false
+        makeCurrent(.leftMouseUp, at: NSPoint(x: frame.frame.width / 2, y: frame.frame.height - 6), in: frame)
+        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: frame)
+        expect(page.parent === frame, "the drop takes the bubble back")
+        let now = NSPoint(x: page.frame.minX - frame.frame.minX, y: page.frame.minY - frame.frame.minY)
+        expect(now == inFrame, "the drop puts the page back in its frame (\(NSStringFromPoint(now)), was \(NSStringFromPoint(inFrame)))")
         frame.performClose(nil)
     }
 

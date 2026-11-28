@@ -85,35 +85,13 @@ enum LittleMetrics {
     static let openDuration: TimeInterval = 0.12
 }
 
-/// Arc renders Little Arc with the default profile's dark palette whatever the
-/// focused space's theme is (observed with the light "Victor" space focused; kept for #549).
+/// The Little Window's fixed colours: its tips, toast and ⌥⌘N's card, and the padlock. The strip and the
+/// "Open in" menu take theirs from the page and the Mac's appearance (CraCore LittleChromeTones).
 enum LittlePalette {
-    /// The strip, left to right: one gradient in every space (CraCore LittleStripTones, #329 #549).
-    /// The measured values wobble by a few units rather than rise, so two stops stay within them;
-    /// 1.168's flat #0C091C is gone (#329).
-    static let stripLeft = NSColor(LittleStripTones.stripLeft)
-    static let stripRight = NSColor(LittleStripTones.stripRight)
-    /// The address pill is a lighter wash over the strip (about #38394A on the left, #43394B on the
-    /// right, which is white at 9–10 %), so it follows the gradient. The hover is not measured.
-    static let pill = Color.white.opacity(0.09)
-    static let pillHover = Color.white.opacity(0.14)
     /// The open padlock for an http page (Arc's `hasInsecureContext`): orange on a pale orange wash.
     /// From the capture attached to #330: strokes about #E93700, and a tile that reads #4B3B45 over the
     /// pill's #3A3A4B, which is that orange at about 10 %.
     static let insecure = NSColor(srgbRed: 233 / 255, green: 55 / 255, blue: 0, alpha: 1)
-    static let iconHover = Color(red: 65 / 255, green: 57 / 255, blue: 70 / 255)
-    static let icon = Color(red: 110 / 255, green: 111 / 255, blue: 128 / 255)
-    static let iconHot = Color(red: 170 / 255, green: 168 / 255, blue: 180 / 255)
-    static let text = Color(red: 163 / 255, green: 161 / 255, blue: 169 / 255)
-    static let label = Color(red: 130 / 255, green: 131 / 255, blue: 146 / 255)
-    static let button = Color(red: 5 / 255, green: 6 / 255, blue: 37 / 255)
-    static let buttonBorder = Color(red: 29 / 255, green: 30 / 255, blue: 55 / 255)
-    static let buttonHover = Color(red: 22 / 255, green: 23 / 255, blue: 52 / 255)
-    static let badge = Color(red: 23 / 255, green: 24 / 255, blue: 50 / 255)
-    static let badgeText = Color(red: 139 / 255, green: 140 / 255, blue: 153 / 255)
-    /// The "Open in" menu's magnifier, ∧ and "No results", and its placeholder (Arc 1.172.1, #331).
-    static let moveMenuGlyph = Color(red: 80 / 255, green: 81 / 255, blue: 102 / 255)
-    static let moveMenuPlaceholder = Color(red: 142 / 255, green: 143 / 255, blue: 157 / 255)
     // Hover tips (measured): navy pill, lavender-white text, pale key caps with blue glyphs.
     static let tooltip = Color(red: 10 / 255, green: 13 / 255, blue: 75 / 255)
     static let tooltipText = Color(red: 222 / 255, green: 223 / 255, blue: 253 / 255)
@@ -136,17 +114,27 @@ enum LittlePalette {
     static let cardCloseGlyph = NSColor(srgbRed: 0x9C / 255, green: 0x9A / 255, blue: 0x9E / 255, alpha: 1)
     static let cardTopLeft = NSColor(srgbRed: 0x0D / 255, green: 0x0B / 255, blue: 0x1B / 255, alpha: 1)
     static let cardBottomRight = NSColor(srgbRed: 0x1C / 255, green: 0x0A / 255, blue: 0x20 / 255, alpha: 1)
-    /// Behind the strip and around the page, where no gradient is drawn.
-    static let barNS = stripLeft
-    static let buttonNS = NSColor(red: 5 / 255, green: 6 / 255, blue: 37 / 255, alpha: 1)
+    /// Behind a Peek's bar and page, and a Little Window's until its strip has its colours.
+    static let barNS = NSColor(LittleStripTones.stripLeft)
 
     /// The space name in "Open in Victor": the target theme's light foreground
     /// (Arc: semanticColorPalette.dark.foregroundPrimary; Victor → #FCEDBC).
-    static func spaceName(_ theme: SpaceTheme) -> Color { Color(tones(theme).spaceName) }
+    static func spaceName(_ theme: SpaceTheme) -> Color {
+        Color(LittleStripTones(target: theme, systemDark: SystemAppearance.shared.isDark).spaceName)
+    }
+}
 
-    /// The strip's colours for the space "Open in" names (CraCore LittleStripTones).
-    static func tones(_ theme: SpaceTheme) -> LittleStripTones {
-        LittleStripTones(target: theme, systemDark: SystemAppearance.shared.isDark)
+/// `NSColor` for a white or black wash over the strip.
+private extension NSColor {
+    convenience init(_ wash: LittleChromeTones.Wash) { self.init(white: wash.white, alpha: wash.alpha) }
+}
+
+extension LittleWindowState {
+    /// The strip's and the "Open in" menu's colours now: the page's colour, the space "Open in" names
+    /// and the Mac's appearance.
+    func chromeTones(store: SidebarStore) -> LittleChromeTones {
+        let space = store.space(targetSpaceID) ?? store.focusedSpace
+        return LittleChromeTones(page: themeColor, target: space.theme, systemDark: SystemAppearance.shared.isDark)
     }
 }
 
@@ -180,6 +168,16 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// covers; a click on it, Escape or the close button ends the Peek.
     let isPeek: Bool
     private(set) weak var peekParent: MainWindowController?
+    /// The browser window currently hosting Capture for this window, if any (#835).
+    weak var activeCaptureHost: MainWindowController?
+    /// The normal browser window that hosts Capture for an ordinary Little Window (never an
+    /// incognito or Blank Window, so "New Easel" and "Send To…" land in a normal space).
+    var captureHost: MainWindowController? {
+        let candidates = app.mainWindows.map { ContentCapture.HostWindow(id: $0.windowID, isStandalone: $0.isStandalone) }
+        guard let id = ContentCapture.hostWindowID(from: candidates, lastNormalWindowID: store.lastNormalWindowID,
+                                                   fallbackID: app.main?.windowID) else { return app.main }
+        return app.mainWindows.first { $0.windowID == id } ?? app.main
+    }
     /// This Peek to its window's veil (MainWindowController.showPeekVeil).
     let peekID = UUID()
     /// The tab the Peek came from: links that leave the Peek open as tabs placed from it, and
@@ -201,10 +199,17 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// The click catcher's frame (screen coordinates), for cra://debug?peekCatcher.
     var dimFrame: NSRect? { dim?.frame }
     private var controls: PeekControlsPanel?
-    /// The Peek is on its way out (closePeekAnimated).
+    /// The Peek is on its way out (closePeekAnimated), or gone (endPeek).
     private(set) var closingPeek = false { didSet { if closingPeek != oldValue { peekParent?.syncPeekAddress() } } }
     /// The Peek is shrinking into place; a page window attaching now waits for the end.
     private var openingPeek = false
+    /// #848: the look at the page after the window comes up, and how often this showing may bring it back.
+    private var pageCheck: DispatchWorkItem?
+    private var pageTries = LittlePageHealth.Tries()
+    private var pageCheckedOnKey = Date.distantPast
+    /// `cra://debug?littleBreakNextShow=hide|size`: the next Little Window to come up leaves its page hidden or laid
+    /// out at its grow-in's start, as a white Little Window from another app was found (#848).
+    static var debugBreakNextShow: String?
     /// The pictures moving while the Peek opens or closes.
     private var transition: PeekTransition?
     /// The link the Peek grew out of, which it closes back into (nil: the whole area).
@@ -233,6 +238,10 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// named, matching the page's profile, or the one picked in this window's command bar (#316),
     /// else the window used last's.
     private var target: LittleWindowTarget
+    /// The link the window opened, or the address typed into its empty card, before redirects: what a
+    /// profile change loads again while the page is still on that entry (CraCore LittleProfileChange).
+    /// Nil for a popup host and for an address typed over a page, which goes on from its entry.
+    private var openedURL: String?
     /// ⌥⌘N's card (GitHub #337, CraCore LittleCard): an empty Little Window is only its command bar,
     /// 490 × 329 pt at the top right of the screen, with no strip, traffic lights or page. A row that
     /// opens a page turns it into the full window (`expandCard`); anything else that closes the bar
@@ -244,6 +253,8 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// The page's DevTools, docked in the page area as the browser window docks them in a pane
     /// (#348). ⌥⌘I opens and closes them (DevToolsToggle).
     private var devTools = DevToolsToggle()
+    /// What the frontend is asked once it is up, and when it takes the keys (CraCore DevToolsFrontendCalls).
+    private var devToolsCalls = DevToolsFrontendCalls()
     /// Chromium's window for the DevTools frontend, while they are open.
     private var devToolsView: NSView?
     /// The frontend is docked, Chrome's default; false once "Undock into separate window" is picked.
@@ -268,10 +279,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         peekParent = parent
         peekSourceTab = parent == nil ? nil : fromTab
         // Little Windows are normal browsing: they target the last normal window's space
-        // (a Peek: the space of the window it covers; a cra://open: the space it names).
-        target = LittleWindowTarget(requested: parent == nil ? space : nil)
-        state = LittleWindowState(targetSpaceID: parent?.focusedSpaceID
-            ?? target.space(lastUsed: app.store.focusedSpaceID(window: app.store.lastNormalWindowID)))
+        // (a Peek: the space of the window it covers; a cra://open: the space it names; a link to a
+        // site whose profile was picked in a Little Window: a space on that profile).
+        let lastUsed = app.store.focusedSpaceID(window: app.store.lastNormalWindowID)
+        let siteSpace = parent == nil && space == nil && opener == nil && fromTab == nil
+            ? url.flatMap { app.store.prefs.siteProfiles.space(for: $0, lastUsed: lastUsed, in: app.store.orderedSpaces) } : nil
+        target = LittleWindowTarget(requested: parent == nil ? space ?? siteSpace : nil)
+        state = LittleWindowState(targetSpaceID: parent?.focusedSpaceID ?? target.space(lastUsed: lastUsed))
         commandBar = CommandBarController(engine: app.engine, store: app.store)
         let size = app.store.prefs.littleWindowSize.map { NSSizeFromString($0) }
             .flatMap { $0 == LittleMetrics.legacyDefaultSize ? nil : $0 }
@@ -314,7 +328,17 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             bar.onCopy = { [weak self] in self?.copyURL() }
             shell.setPeekBar(bar)
         } else {
-            shell.setToolbar(LittleToolbarView(state: state, actions: actions, store: app.store))
+            let bar = LittleToolbarView(state: state, actions: actions, store: app.store)
+            bar.onStrip = { [weak self] tones in
+                guard let self, let window = self.window else { return }
+                // The strip's colour runs on behind the page's rim.
+                let color = NSColor(tones.left)
+                window.backgroundColor = color
+                self.shell.stripColor = color
+                // The grey traffic lights are drawn for the strip: dark aqua's pale discs vanish on a light one.
+                window.standardWindowButton(.closeButton)?.superview?.appearance = NSAppearance(named: tones.light ? .aqua : .darkAqua)
+            }
+            shell.setToolbar(bar)
         }
         shell.onHover = { [weak self] h in
             guard let self, self.state.hover != h else { return }
@@ -390,6 +414,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         let b = PageEngines.makeBrowser(frame: shell.page.bounds, url: url.map { $0.isEmpty ? "about:blank" : $0 }, delegate: self,
                                         incognito: false, profilePath: app.store.profilePath(profile: state.profileID), opener: opener)
         attach(b)
+        openedURL = url
         state.url = (url == "about:blank" ? "" : url) ?? ""
         observeBarSetting()
     }
@@ -544,6 +569,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func orderFrontInBackground() {
         window?.orderFront(nil)
         rejoinPage()
+        cameUp()
     }
 
     /// The page window is an ordinary window, which can't join another app's full-screen
@@ -826,6 +852,11 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
                 .min { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
             if let first { window?.makeFirstResponder(first) }
         case "blur": window?.makeFirstResponder(nil)
+        // A click on "Open in <space>" (not its ⌄), through the bar's own mouseUp, as a pointer's would (#852).
+        case "clickOpen":
+            let clicked = (shell.toolbarHost as? LittleToolbarView)?.debugClickOpen() ?? false
+            CraLog.note("littleToolbar clickOpen: \(clicked ? "clicked" : "no button")")
+            return
         // One pointer sample from the page's bottom left, as when the pointer has left the bar: the real
         // pointer of a background copy can be anywhere, the bar included.
         case "away": sampleBar(at: NSPoint(x: shell.page.frame.minX + 1, y: shell.page.frame.minY + 1))
@@ -889,7 +920,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
                 + " shown=\(shown ? 1 : 0)"
                 + String(format: " size=%.0fx%.0f", frame.width, frame.height)
         }
+        // focus=devtools: the docked frontend is this window's first responder; panel=: the panel it last said it shows.
+        let responder = window.firstResponder as? NSView
+        let holder = EmbeddedDevTools.holder(of: browser?.devToolsWindow).flatMap { $0.window === window ? $0 : nil }
+        let focus = holder.flatMap { h in responder.map { $0.isDescendant(of: h) } } == true ? "devtools"
+            : browser.flatMap { b in responder.map { $0.isDescendant(of: b.containerView) } } == true ? "page" : "other"
         return out + " pageFills=\(same(page, area) ? 1 : 0)" + String(format: " area=%.0fx%.0f", area.width, area.height)
+            + " focus=\(focus) panel=\(devTools.panel ?? "-")"
     }
 
     /// cra://debug?littleCard=<step>: `go:<typed>` is Return on what was typed in the card's bar,
@@ -938,6 +975,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         // all the same: the command bar would cover a sign-in popup.
         if hasPage || isPopupHost { focusPage() } else { openCommandBar() }
         putBrowserWindowsBackOnceShown()
+        cameUp()
     }
 
     // MARK: Peek
@@ -1038,7 +1076,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func parkPeek() {
         guard isPeek, !isParked, !closingPeek, let window, let parent = peekParent else { return }
         isParked = true
-        peekParent?.closeCapture(in: self)
+        closeCapture()
         openingPeek = false
         transition?.remove()
         transition = nil
@@ -1101,7 +1139,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func dropPeek() {
         guard isPeek, let window, !closingPeek else { return }
         closingPeek = true
-        peekParent?.closeCapture(in: self)
+        closeCapture()
         transition?.remove()
         transition = nil
         guard windowShouldClose(window) else { return }
@@ -1123,7 +1161,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         guard let window, let parent = peekParent, let pw = parent.window else { finish(); return }
         let neverShown = openingPeek && transition == nil
         closingPeek = true
-        parent.closeCapture(in: self)
+        closeCapture()
         transition?.remove()
         transition = nil
         // Closed while it was still finding its link: it goes without having been seen.
@@ -1132,20 +1170,27 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         // The card's screenshot and the link's place now, asked together.
         var shot: CGImage??
         // No link to look for again: the area, or the place the Peek was clicked open (#359).
-        var linkNow: NSRect?? = peekSource.map { $0.fromLink ? nil : .some($0.rect) } ?? .some(nil)
+        var linkNow: PeekLayout.SourceAnswer? = peekSource.map { $0.fromLink ? nil : .found($0.rect) } ?? .gone
         let start: (CGImage?) -> Void = { [weak self] page in
             guard let self, !started else { return }
             started = true
             let card = pw.convertFromScreen(window.frame)
             let pageRect = self.shell.page.frame
-            // Into the link where the page has it now; where it was when Chromium is late; out to
-            // the whole area, fading, when it's gone.
+            // Into the link where the page has it now; where it was when Chromium is late or its
+            // script fails; out to the whole area, fading, only when it's gone (#682).
             let area = pw.convertFromScreen(parent.peekArea())
-            let back: (rect: NSRect, image: CGImage?) = switch linkNow {
-            case .none: (self.peekSource?.rect ?? area, self.peekSource?.image)
-            case .some(.some(let r)): (r, self.peekSource?.image)
-            case .some(.none): (area, nil)
+            let back: (rect: NSRect, image: CGImage?)
+            switch PeekLayout.closeTarget(linkNow ?? .noAnswer, stored: self.peekSource?.rect ?? area, area: area) {
+            case .link(let r): back = (r, self.peekSource?.image)
+            case .area(let a): back = (a, nil)
             }
+            let how: String = switch linkNow ?? .noAnswer {
+            case _ where self.peekSource == nil: "out to the area (it opened from there)"
+            case .found: "into the link where it is now"
+            case .noAnswer: "into the link where it was (no answer)"
+            case .gone: "out to the area (the link is gone)"
+            }
+            CraLog.note("peek closes \(how)")
             let t = PeekTransition(over: pw, card: card,
                                    cardImage: PeekTransition.picture(of: self.shell, page: page, pageRect: pageRect),
                                    column: self.controls.map { pw.convertFromScreen($0.frame) } ?? .zero,
@@ -1169,8 +1214,8 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             start(shot ?? nil)
         }
         if let source = peekSource, source.fromLink {
-            parent.peekSourceAgain(source) { r in
-                if linkNow == nil { linkNow = .some(r) }
+            parent.peekSourceAgain(source) { answer in
+                if linkNow == nil { linkNow = answer }
                 ready(false)
             }
         }
@@ -1200,7 +1245,10 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         }
         if let window, let p = window.parent { p.removeChildWindow(window) }
         peekParent?.endPeekVeil(for: peekID)
-        peekParent?.syncPeekAddress()
+        // On its way out however it goes: Expand, Add to Split, the page's window.close() end it here, in
+        // windowWillClose, with its window still visible. Unmarked, it stayed the Peek in front, and the
+        // sidebar's address field kept its page for every tab after (#706). The flag syncs the field.
+        if closingPeek { peekParent?.syncPeekAddress() } else { closingPeek = true }
         if !promoted, let pw = peekParent?.window, NSApp.isActive { pw.makeKeyAndOrderFront(nil) }
     }
 
@@ -1257,6 +1305,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func openCommandBar() {
         guard let window else { return }
         tooltipTimer?.invalidate(); hideTooltip()
+        closeCapture()
         closePopup()
         let prefill = hasPage ? currentURL : nil
         // Suggestions come from the normal profile even when an incognito window was in front.
@@ -1377,20 +1426,23 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
 
     private func handleCommit(_ s: Suggestion?, typed: String, mode: CommandBarMode) {
         let query = commandBar.query
-        func open(_ url: String) {
-            var url = url
+        // address: what opens is an address entered, not a search; counted for the completion (#667).
+        func open(_ url: String, address: Bool = false) {
+            var url = url, entered = address
             // Another app's address opens that app, with no page (#604).
             switch AppLinkPrompt.openTyped(url) {
             case .load: break
             case .openApp, .refuse: return
-            case .search: url = commandBar.engine.searchURL(typed)
+            case .search: url = commandBar.engine.searchURL(typed); entered = false
             }
             store.recordQuerySelection(query: query, url: url)
+            if entered { store.recordTyped(url: url, profile: state.profileID) }
             navigate(url)
         }
         guard let s else {
             if typed.isEmpty { return }
-            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : commandBar.engine.searchURL(typed))
+            let address = SuggestionEngine.looksLikeURL(typed)
+            open(address ? SuggestionEngine.urlFromInput(typed) : commandBar.engine.searchURL(typed), address: address)
             return
         }
         switch s.kind {
@@ -1404,11 +1456,12 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             store.restoreArchived(id)
             app.main.showWindow(nil)
         case .navigate:
-            open(TypedURL.navigation(typed: typed, rowURL: s.url, rowIsForTyped: typed == query) ?? commandBar.engine.searchURL(typed))
+            let address = TypedURL.navigation(typed: typed, rowURL: s.url, rowIsForTyped: typed == query)
+            open(address ?? commandBar.engine.searchURL(typed), address: address != nil)
         case .search:
             open(s.url ?? commandBar.engine.searchURL(typed))
         case .history, .topDomain:
-            open(s.url ?? "")
+            open(s.url ?? "", address: true)
         case .command(let id):
             app.perform(id)
         case .switchSpace(let id):
@@ -1426,7 +1479,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             if isCard { openCommandBar() }
         case .moveToSpace(let id):
             promote(to: id)
-        case .moveToFolder:
+        case .moveToFolder, .revealFolder:
             break
         }
     }
@@ -1516,13 +1569,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         switch step {
         case "open": if popup == nil { openPopup() }
         case "close": closePopup()
-        case let s where s.hasPrefix("down"): (popup?.contentView as? LittleSpacesPopup)?.debugMove(down: Int(s.dropFirst(4)) ?? 1)
-        case let s where s.hasPrefix("type:"): (popup?.contentView as? LittleSpacesPopup)?.debugType(String(s.dropFirst(5)))
+        case let s where s.hasPrefix("down"): popup?.spaces?.debugMove(down: Int(s.dropFirst(4)) ?? 1)
+        case let s where s.hasPrefix("type:"): popup?.spaces?.debugType(String(s.dropFirst(5)))
         default: break
         }
         var line = "chevron=\(state.showsChevron ? 1 : 0)"
-        if let panel = popup, let window, let menu = panel.contentView as? LittleSpacesPopup {
-            let f = panel.frame, w = window.frame
+        if let panel = popup, let window, let menu = panel.spaces {
+            let f = panel.menuFrame, w = window.frame
             line += String(format: " menu=%.0fx%.0f top=%.0f right=%.0f ", f.width, f.height, w.maxY - f.maxY, w.maxX - f.maxX) + menu.debugState
         } else {
             line += " menu=closed"
@@ -1534,6 +1587,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         let empty = !hasPage && browser?.canGoBack == false
         expandCard()
         state.url = url
+        openedURL = empty ? url : nil
         // An empty window's page is about:blank: loading over it left that entry behind the first
         // page, so Back and the swipe back went to a blank page instead of closing the window
         // (#495). A new page at the address starts its history there.
@@ -1598,11 +1652,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         tooltipTimer?.invalidate(); hideTooltip()
         commandBar.close()
         let panel = LittlePopupPanel()
-        panel.contentView = LittleSpacesPopup(state: state, store: store,
+        // The search field's caret: dark in Arc's light menu.
+        panel.appearance = NSAppearance(named: state.chromeTones(store: store).light ? .aqua : .darkAqua)
+        panel.spaces = LittleSpacesPopup(state: state, store: store,
                                               onPick: { [weak self] sid in self?.closePopup(); self?.promote(to: sid) },
                                               onClose: { [weak self] in self?.closePopup() })
         panel.delegate = self
-        panel.setFrame(LittleMoveMenu.frame(rows: store.orderedSpaces.count, in: window.frame), display: true)
+        panel.menuFrame = LittleMoveMenu.frame(rows: store.orderedSpaces.count, in: window.frame)
         window.addChildWindow(panel, ordered: .above)
         popup = panel
         state.popupOpen = true
@@ -1638,6 +1694,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// live browser goes with it, so history, scroll position and logins stay.
     func promote(to spaceID: UUID?) {
         guard let b = browser, hasPage else { return }
+        closeCapture()
         (b as? EaselBrowser)?.usePageLook()
         closePopup()
         commandBar.close()
@@ -1666,14 +1723,14 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// (LittleBrowser.State.shouldShowProfileIndicators).
     var showsProfile: Bool { !store.profiles.isEmpty }
 
-    var profileName: String { store.profile(state.profileID)?.name ?? "Default" }
+    var profileName: String { store.profileName(state.profileID) }
 
     /// The indicator's menu (LittleBrowserToolbarAction.showChangeProfileMenu): every profile,
     /// the page's ticked (ChangeProfileMenuOption.isCurrent).
     func showProfileMenu(from view: NSView) {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let options: [(UUID?, String)] = [(nil, "Default")] + store.profiles.map { ($0.id, $0.name) }
+        let options: [(UUID?, String)] = [(nil, store.profileName(nil))] + store.profiles.map { ($0.id, $0.name) }
         for (id, name) in options {
             MenuItems.add(menu, name, on: id == state.profileID) { [weak self] in self?.changeProfile(to: id) }
         }
@@ -1687,7 +1744,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func changeProfile(to id: UUID?) {
         guard id != state.profileID, let window else { return }
         if UserDefaults.standard.bool(forKey: Self.bypassProfileDialogKey) { reload(inProfile: id); return }
-        let alert = AppDialog(title: "Open this page in \(store.profile(id)?.name ?? "Default")?",
+        let alert = AppDialog(title: "Open this page in \(store.profileName(id))?",
                               message: "Each Profile has different browser data, so this webpage might look a little different.",
                               actions: [DialogAction("Change Profile"), .cancel], suppressionTitle: "Don’t ask again")
         alert.present(over: window) { [weak self, weak alert] resp in
@@ -1697,17 +1754,31 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         }
     }
 
-    /// A page can't move between profiles: a new browser in the other one loads its address.
-    private func reload(inProfile id: UUID?) {
-        guard browser != nil else { return }
+    /// `cra://debug?littleProfile=<name>`: the page moved to that profile, past the confirm `changeProfile` asks.
+    func debugChangeProfile(named name: String) {
+        let id = store.profiles.first { $0.name == name }?.id
+        guard id != nil || name == store.profileName(nil) else { return CraLog.note("little profile \(name): no such profile") }
+        let address = reload(inProfile: id)
+        CraLog.note("little profile \(name): \(store.profileName(state.profileID)) at \(address ?? "-")")
+    }
+
+    /// A page can't move between profiles: a new browser in the other one loads its address, which it returns. The
+    /// profile is remembered for that address's site, as Arc's domainToProfilePreferences.
+    @discardableResult
+    private func reload(inProfile id: UUID?) -> String? {
+        guard browser != nil else { return nil }
         state.profileID = id
-        replacePage(at: hasPage ? currentURL : "about:blank")
+        let address = LittleProfileChange.address(opened: openedURL, shown: currentURL, wentOn: browser?.canGoBack == true)
+        store.prefs.siteProfiles.remember(id, for: address)
+        replacePage(at: address)
+        return address
     }
 
     /// A new page at `url` in place of this window's, in the engine the address gets (a profile
     /// change, or a navigation the other engine has to show).
     private func replacePage(at url: String) {
         guard let old = browser else { return }
+        closeCapture()
         endDevTools(of: old)
         old.delegate = nil
         if let w = old.hostWindow, w.parent === window { window?.removeChildWindow(w); w.orderOut(nil) }
@@ -1761,12 +1832,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         case "goForward": browser?.goForward()
         case "reload": browser?.reload()
         case "hardReload": browser?.reloadIgnoringCache()
-        case "clearCache": browser?.clearSiteDataAndReload(cookies: false)
-        case "clearCookies": browser?.clearSiteDataAndReload(cookies: true)
+        case "clearCache": browser?.clearSiteDataAndReload(.cache)
+        case "clearCookies": browser?.clearSiteDataAndReload(.cookies)
+        case "clearSiteData": browser?.clearSiteDataAndReload(.siteData)
         case "stop": browser?.stopLoading()
-        case "zoomIn": if let b = browser { b.setZoomLevel(b.zoomLevel() + 0.5) }
-        case "zoomOut": if let b = browser { b.setZoomLevel(b.zoomLevel() - 0.5) }
-        case "resetZoom": browser?.setZoomLevel(0)
+        case "zoomIn": if let label = browser?.zoomStep(in: true) { showToast(label) }
+        case "zoomOut": if let label = browser?.zoomStep(in: false) { showToast(label) }
+        case "resetZoom": if let label = browser?.resetZoomShowing() { showToast(label) }
         case "copyURL": copyURL()
         case "copyURLMarkdown":
             copy("[\(browser?.currentTitle ?? state.title)](\(currentURL))")
@@ -1920,6 +1992,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         // Before the page and its windows go: one of them may have the keyboard.
         handBackFocus()
         tooltipTimer?.invalidate(); hideTooltip()
+        closeCapture()
         closePopup()
         commandBar.close()
         finder.close()
@@ -1936,6 +2009,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         handBackFocus()  // closes that skip windowShouldClose: the page's own window.close()
+        closeCapture()
         stopBarLook()
         endPeek()
         if browser == nil { app.removeLittleWindow(self) }
@@ -1949,33 +2023,53 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         handedBack = true
         var key = NSApp.keyWindow
         while let parent = key?.parent { key = parent }
-        let hadKeyboard = key === window || key === commandPanel || key === popup
+        // key != nil: with no key window and no popup, `key === popup` was nil === nil.
+        let keyIsThis = key != nil && (key === window || key === commandPanel || key === popup)
+        // A click on its close button while another app is in front closes it before AppKit makes Cra active (#659).
+        let event = NSApp.currentEvent
+        let clicked = event.map { ($0.type == .leftMouseUp || $0.type == .leftMouseDown) && $0.window === window } ?? false
+        let close = LittleWindowClose(keyIsThisWindow: keyIsThis, craActive: NSApp.isActive,
+                                      craFrontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+                                      clickedInWindow: clicked)
         // Other Little Windows still open (#646): the front one takes the keyboard, as in Arc, and the app
         // the window was opened over comes back only after the last.
         let next = isPeek ? nil : frontLittleWindow()
-        if LittleWindowReturn.nextTakesKeyboard(closingKeyWindow: hadKeyboard, craActive: NSApp.isActive, movedToTab: movedToTab,
+        if LittleWindowReturn.nextTakesKeyboard(closingKeyWindow: close.closingKeyWindow, craActive: close.craActive, movedToTab: movedToTab,
                                                 littleWindowsLeft: next != nil), let next {
             CraLog.note("Little Window closed: the next one takes the keyboard (#646)")
             next.takeKeyboard()
             return
         }
-        guard let pid = focusReturn.target(closingKeyWindow: hadKeyboard, craActive: NSApp.isActive, movedToTab: movedToTab,
+        guard let pid = focusReturn.target(closingKeyWindow: close.closingKeyWindow, craActive: close.craActive, movedToTab: movedToTab,
                                            littleWindowsLeft: next != nil),
               let other = NSRunningApplication(processIdentifier: pid), !other.isTerminated else { return }
         CraLog.note("Little Window closed: the app it was opened over comes forward (#430)")
+        // Cra is still the active app for a moment, or about to become it (the close button clicked while that app
+        // was in front): with this window gone, AppKit gave the keyboard to the browser window then, which came
+        // forward on its display over the app in use there (#659). The hold has it until Cra lets go of the front.
+        KeyboardHoldPanel.take(at: window.frame)
+        NSApp.yieldActivation(to: other)
         other.activate(from: .current, options: [])
     }
 
     /// The front one of the other Little Windows open on this Space (not a Peek, not minimized), in the
-    /// window server's order, front to back.
+    /// window server's order, front to back. One on another desktop isn't: it would switch macOS there (#738).
     private func frontLittleWindow() -> LittleWindowController? {
-        let others = app.littleWindows.filter { $0 !== self && !$0.isPeek && $0.window?.isVisible == true && $0.window?.isMiniaturized == false }
+        let others = app.littleWindows.filter { other in
+            guard other !== self, let w = other.window else { return false }
+            return LittleWindowReturn.canTakeKeyboard(isPeek: other.isPeek, visible: w.isVisible, miniaturized: w.isMiniaturized,
+                                                      onActiveSpace: w.isOnActiveSpace && !other.debugOnOtherDesktop)
+        }
         guard !others.isEmpty else { return nil }
         let order = (NSWindow.windowNumbers(options: []) ?? []).map(\.intValue)
         return others.min { a, b in
             (a.window.flatMap { order.firstIndex(of: $0.windowNumber) } ?? .max) < (b.window.flatMap { order.firstIndex(of: $0.windowNumber) } ?? .max)
         }
     }
+
+    /// Scenarios (cra://debug?littleOtherDesktop=): this window counts as on another desktop, which a test copy
+    /// can't make (#738).
+    var debugOnOtherDesktop = false
 
     /// Another Little Window closed while this one was next in front (#646): it comes forward with the keys.
     func takeKeyboard() {
@@ -2021,7 +2115,13 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === window, let host = browser?.hostWindow else { return }
+        guard (notification.object as? NSWindow) === window else { return }
+        // Back from another app or window: the page is looked at again, at most every 10 s (#848).
+        if Date().timeIntervalSince(pageCheckedOnKey) > 10 {
+            pageCheckedOnKey = Date()
+            checkPageDraws("became key")
+        }
+        guard let host = browser?.hostWindow else { return }
         ChromiumPageFocus.focus(host)
     }
 
@@ -2066,7 +2166,9 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             }
             return
         }
-        if Date().timeIntervalSince(commandBarOpenedAt) < 0.6 {
+        // While opening it takes the keys back, not from a click (#807): a click closes it.
+        let click = NSApp.currentEvent.map { [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains($0.type) && $0.window !== commandPanel } ?? false
+        if CommandBarClosing.takesKeysBack(secondsOpen: Date().timeIntervalSince(commandBarOpenedAt), byClick: click) {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.commandBar.isOpen else { return }
                 self.commandPanel.makeKeyAndOrderFront(nil)
@@ -2104,15 +2206,17 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         peekParent?.syncPeekAddress()
         // Peek's bar takes the page's colour as the main window's does (#629): its top-right corner.
         if !loading, browser === self.browser {
-            ToolbarSampler.sample(browser) { [weak self, weak browser] hex in
+            ToolbarSampler.sample(browser, background: { [weak self] in self?.pageBackground }) { [weak self, weak browser] hex in
                 guard let self, let browser, browser === self.browser, !browser.isLoading else { return }
-                self.state.themeColor = hex
+                self.stripColor.sampled(hex)
+                self.state.themeColor = self.stripColor.hex
             }
         }
         syncSlowResponse(browser)
     }
 
     func browser(_ browser: CraBrowser, didChangeCommittedLoad committed: Bool) {
+        if committed, browser === self.browser { stripColor.committed() }
         if committed { AppLinkPrompt.pageLoaded(browser) }
         syncSlowResponse(browser)
     }
@@ -2167,13 +2271,28 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
 
     func browser(_ browser: CraBrowser, didLoadFavicon image: NSImage, forURL iconURL: String) {
         favicon = image
-        if let key = FaviconKey.key(for: browser.currentURL) { app.favicons.store(image, forKey: key) }
+        // Its section's and its host's, as a tab's (#909): the badge on the tab it came from reads the section's.
+        if let key = FaviconKey.sectionKey(for: browser.currentURL) {
+            for k in FaviconKey.chain(of: key).reversed() { app.favicons.store(image, forKey: k) }
+        }
     }
 
-    func browser(_ browser: CraBrowser, didReportThemeColor hex: String) { state.themeColor = hex }
+    func browser(_ browser: CraBrowser, didReportThemeColor hex: String) {
+        stripColor.sampled(hex)
+        state.themeColor = stripColor.hex
+    }
+    /// The strip's page colour: the page's background as soon as it is reported, then its corner's reading.
+    private var stripColor = LittleStripColor()
+    /// The page's own background as the engine last reported it ("" while a new page has none), for the bar's sample.
+    private var pageBackground = ""
     /// The page window trails the shell during a fast resize; the gap shows the page's colour
     /// (Arc's canvas while a new page has none yet).
     func browser(_ browser: CraBrowser, didReportBackgroundColor hex: String) {
+        if browser === self.browser {
+            pageBackground = hex
+            stripColor.background(hex)
+            if state.themeColor != stripColor.hex { state.themeColor = stripColor.hex }
+        }
         shell.page.layer?.backgroundColor = (hex.isEmpty ? CraBrowser.pageCanvasColor : NSColor(Color(hex: hex))).cgColor
     }
     func browser(_ browser: CraBrowser, didChangeStatusMessage message: String) {}
@@ -2253,6 +2372,11 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         app.openLink(url, in: kind, space: state.targetSpaceID, fromIncognito: browser.isIncognito)
     }
 
+    func browser(_ browser: CraBrowser, requestsCaptureOfImageAt point: NSPoint) {
+        guard browser === self.browser else { return }
+        captureImage(at: point)
+    }
+
     /// Arc 1.171 (#202): a link from a Peek that asks for a new tab is a Today tab in the space,
     /// placed as a link from the tab under the Peek would be, and selected. The Peek waits on its
     /// own tab, as it does for any other tab (parkPeek, #242), for the next link. A background
@@ -2293,11 +2417,20 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             b.showDevTools()
             return
         }
+        let open = devTools.state == .open
         let (effect, frontend) = devTools.run(command)
         // A press made while DevTools close is done when they reopen (DevToolsToggle.didClose),
         // one made while they open once the frontend is up.
-        b.devToolsAction = frontend
+        let (engineAction, now) = devToolsCalls.command(frontend, shows: effect == .show || effect == .frontend, frontendUp: open)
+        b.devToolsAction = engineAction
         perform(effect)
+        take(now)
+    }
+
+    /// Runs a DevToolsFrontendCalls step in the page's frontend.
+    private func take(_ step: DevToolsFrontendCalls.Step) {
+        if let script = step.script { browser?.executeJavaScript(script, inDevTools: true) }
+        if step.takesKeys, let window, let dev = devToolsView?.window { EmbeddedDevTools.giveKeys(to: dev, in: window) }
     }
 
     private func perform(_ effect: DevToolsToggle.Effect) {
@@ -2352,7 +2485,16 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     }
 
     func browser(_ browser: CraBrowser, devToolsShowsPanel panel: String) {
-        if browser === self.browser { devTools.didShowPanel(panel) }
+        guard browser === self.browser else { return }
+        let first = devTools.panel == nil
+        devTools.didShowPanel(panel)
+        // A closing frontend's report is dropped (DevToolsToggle.didShowPanel).
+        guard devTools.state == .open || devTools.state == .opening else { return }
+        take(devToolsCalls.frontendShowsPanel(first: first))
+    }
+
+    func browserDevToolsWantsKeys(_ browser: CraBrowser) {
+        if browser === self.browser { take(.init(takesKeys: true)) }
     }
 
     /// Hangs the DevTools window on this one over the page area, under the page's own window, or,
@@ -2535,6 +2677,111 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
 }
 
 /// The navy strip on top, the page edge to edge below.
+// MARK: Page health (#848)
+
+extension LittleWindowController {
+    /// The window came up (shown, or shown behind the app in use): its page is looked at once the arrival settles.
+    private func cameUp() {
+        pageTries.reset()
+        pageCheckedOnKey = Date()
+        if let mode = Self.debugBreakNextShow {
+            Self.debugBreakNextShow = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugBreakPage(mode) }
+        }
+        checkPageDraws("came up")
+    }
+
+    /// Looks at the page `delay` seconds from now (a newer call replaces a waiting one).
+    func checkPageDraws(_ why: String, after delay: TimeInterval = 1.2) {
+        pageCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.lookAtPage { [weak self] verdict, probe in
+                guard let self else { return }
+                switch verdict {
+                case .drawing, .notJudged:
+                    if why == "came up" { CraLog.note("little window page \(verdict == .drawing ? "drawing" : "not judged") (\(why)): \(probe)") }
+                case .stuck(let reasons):
+                    guard self.pageTries.take() else {
+                        CraLog.note("little window page still not drawing, left alone (\(reasons.joined(separator: ", "))): \(probe)")
+                        return
+                    }
+                    CraLog.note("little window page not drawing (\(why): \(reasons.joined(separator: ", "))): shown again")
+                    self.bringPageBack()
+                    self.checkPageDraws("after showing it again")
+                }
+                if why == "after showing it again", verdict == .drawing { CraLog.note("little window page drawing again: \(probe)") }
+            }
+        }
+        pageCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// The page's view in this window: Chromium's, or the container for a page that hasn't made one yet.
+    private var pageView: NSView? {
+        guard let browser else { return nil }
+        return EmbeddedPages.webContentsView(in: browser.containerView) ?? browser.containerView
+    }
+
+    /// What LittlePageHealth judges, read from the window, the window server and the page (PageProbe).
+    func lookAtPage(_ done: @escaping (LittlePageHealth.Verdict, String) -> Void) {
+        // Chromium pages Cra hosts in the window itself; WebKit, easels and Chrome-hosted page windows draw otherwise.
+        guard let window, let browser, let page = pageView, browser.hostWindow == nil,
+              !(browser is WebKitBrowser), !(browser is EaselBrowser) else { done(.notJudged, "no Chromium page"); return }
+        let shown = window.isVisible && window.isOnActiveSpace && !window.isMiniaturized && window.alphaValue > 0
+            && !MainWindowController.coverage(of: window).covered
+        let meantHidden = isCard || isParked || openingPeek || closingPeek
+        let viewHidden = page.isHiddenOrHasHiddenAncestor
+        let viewSize = browser.containerView.bounds.size
+        let scale = window.backingScaleFactor
+        let loading = browser.isLoading
+        PageProbe.run(browser) { line, _, _ in
+            let fields = Dictionary(line.split(separator: " ").compactMap { pair -> (String, String)? in
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                return kv.count == 2 ? (String(kv[0]), String(kv[1])) : nil
+            }, uniquingKeysWith: { a, _ in a })
+            let look = LittlePageHealth.Look(windowShown: shown, pageMeantHidden: meantHidden, viewHidden: viewHidden,
+                                             visibility: fields["visibility"], frameRate: fields["frameRate"].flatMap { Int($0) },
+                                             viewport: fields["viewport"].flatMap { LittlePageHealth.viewport($0, backingScale: scale) },
+                                             viewSize: viewSize, loading: loading)
+            let said = "window \(shown ? "in sight" : "out of sight")\(meantHidden ? ", page meant hidden" : "")\(viewHidden ? ", view hidden" : ""), view \(Int(viewSize.width))x\(Int(viewSize.height)), \(line)"
+            done(LittlePageHealth.judge(look), said)
+        }
+    }
+
+    /// What the reporter's resize did, and a little more: the page's view is shown again (Chromium shows a page
+    /// whose view comes back), placed over the whole page area, and the area takes a one-point resize and back, so
+    /// Chromium lays the page out for its size and draws a new frame.
+    private func bringPageBack() {
+        guard let browser, let window, let page = pageView else { return }
+        let container = browser.containerView
+        var v: NSView? = page
+        while let view = v, view !== window.contentView {
+            if view.isHidden { view.isHidden = false }
+            v = view.superview
+        }
+        if page !== container {
+            page.frame = container.bounds
+            page.isHidden = true
+            page.isHidden = false
+        }
+        let frame = container.frame
+        container.setFrameSize(NSSize(width: frame.width, height: max(1, frame.height - 1)))
+        DispatchQueue.main.async { container.frame = frame }
+        // Chromium's own occlusion pass (WindowOcclusionCheckerMac) may be what hid it: an occlusion change of the window
+        // makes it work out every window's state again, and this one is in sight.
+        NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
+    }
+
+    /// `cra://debug?littleBreakNextShow=…`: leaves the page as #848's white Little Window was, hidden or laid out at
+    /// the grow-in's 48 x 30 start.
+    private func debugBreakPage(_ mode: String) {
+        guard let page = pageView else { return }
+        if mode == "hide" { page.isHidden = true }
+        if mode == "size" { page.frame = NSRect(x: 0, y: 0, width: 48, height: 30) }
+        CraLog.note("little window page broken for the test: \(mode)")
+    }
+}
+
 final class LittleShellView: NSView {
     private(set) var toolbarHost = NSView()
     let page = NSView()
@@ -2625,11 +2872,13 @@ final class LittleShellView: NSView {
     }
     private let cardBackground = CAGradientLayer()
     private var trackingArea: NSTrackingArea?
+    /// Behind the strip and around the page: the strip's left colour.
+    var stripColor = LittlePalette.barNS { didSet { layer?.backgroundColor = stripColor.cgColor } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = LittlePalette.barNS.cgColor
+        layer?.backgroundColor = stripColor.cgColor
         // Top left to bottom right (the layer's y runs up).
         cardBackground.colors = [LittlePalette.cardTopLeft.cgColor, LittlePalette.cardBottomRight.cgColor]
         cardBackground.startPoint = CGPoint(x: 0, y: 1)
@@ -2778,6 +3027,17 @@ struct BrowserWindowsBehind {
             guard w.isVisible, let anchor = LittleWindowRaise.anchor(for: w.windowNumber, in: stack, pid: pid) else { return nil }
             return (w, anchor)
         }
+    }
+
+    /// Out of sight while Cra comes forward for Picture in Picture's window (#741): AppKit raised a browser window then,
+    /// over the app the user was in, for a moment. Each is behind another window, so nothing shows going.
+    func takeOut() {
+        for (w, _) in pairs where w.isVisible { w.orderOut(nil) }
+    }
+
+    /// Back where `takeOut` found each: just behind the window that was in front of it.
+    func bringBackIn() {
+        for (w, anchor) in pairs where !w.isVisible { w.order(.below, relativeTo: anchor) }
     }
 
     /// Each goes back behind its window. `clickedIfKey`: the Little Window has had the keys, so a browser window that has
@@ -2967,6 +3227,26 @@ final class LittleTooltipView: NSView {
 final class LittlePopupPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+    /// Room round the menu for its shadow. Arc draws the menu in a transparent window with a soft shadow and no
+    /// rim; the window server's shadow drew a grey rim round Arc's light menu.
+    static let shadowMargin: CGFloat = 12
+    private let menuShadow = CALayer()
+    /// The menu, inset by the shadow's margin.
+    var spaces: LittleSpacesPopup? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            guard let spaces, let host = contentView else { return }
+            spaces.frame = host.bounds.insetBy(dx: Self.shadowMargin, dy: Self.shadowMargin)
+            spaces.autoresizingMask = [.width, .height]
+            host.addSubview(spaces)
+        }
+    }
+    /// The menu's own frame on screen (the window is larger by the shadow's margin).
+    var menuFrame: NSRect {
+        get { frame.insetBy(dx: Self.shadowMargin, dy: Self.shadowMargin) }
+        set { setFrame(newValue.insetBy(dx: -Self.shadowMargin, dy: -Self.shadowMargin), display: true) }
+    }
+
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: LittleMoveMenu.width, height: 150),
                    styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
@@ -2974,11 +3254,48 @@ final class LittlePopupPanel: NSPanel {
         level = .floating
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = true
+        hasShadow = false
+        let host = LittlePopupShadowView(shadowLayer: menuShadow)
+        host.wantsLayer = true
+        menuShadow.shadowColor = NSColor.black.cgColor
+        menuShadow.shadowOpacity = 0.2
+        menuShadow.shadowRadius = 5
+        menuShadow.shadowOffset = CGSize(width: 0, height: -2)
+        host.layer?.addSublayer(menuShadow)
+        contentView = host
         hidesOnDeactivate = false
         // Arc's menu is whole in the first frame after the click (#331): no system fade.
         animationBehavior = .none
         collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+    }
+}
+
+/// The menu's window behind it: transparent, with the menu's shadow, which follows its size.
+private final class LittlePopupShadowView: NSView {
+    private let shadowLayer: CALayer
+
+    init(shadowLayer: CALayer) {
+        self.shadowLayer = shadowLayer
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let menu = bounds.insetBy(dx: LittlePopupPanel.shadowMargin, dy: LittlePopupPanel.shadowMargin)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shadowLayer.frame = bounds
+        shadowLayer.shadowPath = CGPath(roundedRect: menu, cornerWidth: LittleMoveMenu.cornerRadius, cornerHeight: LittleMoveMenu.cornerRadius,
+                                   transform: nil)
+        CATransaction.commit()
+    }
+
+    /// Only the menu takes clicks; its shadow doesn't.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
     }
 }
 
@@ -2999,8 +3316,9 @@ final class LittleToolbarView: NSView {
     /// The magnifier, or the open padlock for a page that isn't served over https (#330).
     private let search = NSImageView()
     private var isInsecure = false
-    /// For `cra://debug?littleShown`: the strip's gradient ends and the space name's colour as drawn
-    /// (#549), the padlock and the pill's text.
+    /// For `cra://debug?littleShown`: whether the strip is drawn as light, the traffic lights' appearance, the
+    /// address's colour, the strip's gradient ends and the space name's colour as drawn (#549), the padlock and the
+    /// pill's text.
     var debugReadout: String {
         func hex(_ c: Any?) -> String {
             guard let c, CFGetTypeID(c as CFTypeRef) == CGColor.typeID else { return "-" }
@@ -3008,9 +3326,16 @@ final class LittleToolbarView: NSView {
         }
         let label = openLabel.attributedStringValue
         let name = label.length > 0 ? label.attribute(.foregroundColor, at: label.length - 1, effectiveRange: nil) as? NSColor : nil
-        return "gradient=\(hex(gradient.colors?.first))-\(hex(gradient.colors?.last)) name=\(name.map { Color(nsColor: $0).hexString } ?? "-") "
+        let lights = window?.standardWindowButton(.closeButton)?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        return "light=\(tones?.light == true ? 1 : 0) buttons=\(lights == .aqua ? "light" : lights == .darkAqua ? "dark" : "-") "
+            + "text=\(urlLabel.textColor.map { Color(nsColor: $0).hexString } ?? "-") "
+            + "gradient=\(hex(gradient.colors?.first))-\(hex(gradient.colors?.last)) name=\(name.map { Color(nsColor: $0).hexString } ?? "-") "
             + "padlock=\(isInsecure ? 1 : 0) address=\(urlLabel.stringValue)"
     }
+    /// The colours the strip is drawn in, from the page's colour and the Mac's appearance.
+    private var tones: LittleChromeTones?
+    /// Told the strip's colours, for the window behind the page's rim and its traffic lights; at once when set.
+    var onStrip: ((LittleChromeTones) -> Void)? { didSet { if let tones { onStrip?(tones) } } }
     private let urlLabel = NSTextField.sidebarLabel(size: 13)
     private let puzzle = LittleIconView(symbol: "puzzlepiece.extension", size: 15)
     private let link = LittleIconView(symbol: "link", size: 14)
@@ -3045,19 +3370,16 @@ final class LittleToolbarView: NSView {
         search.imageScaling = .scaleNone
         showSecurity(insecure: false)
         pill.addSubview(search)
-        urlLabel.textColor = NSColor(LittlePalette.text)
         urlLabel.alignment = .center
         pill.addSubview(urlLabel)
         pill.addSubview(puzzle)
         pill.addSubview(link)
         pill.addSubview(profileChip)
         openButton.wantsLayer = true
-        openButton.layer?.backgroundColor = LittlePalette.buttonNS.cgColor
         openButton.layer?.cornerRadius = 7
         openButton.layer?.cornerCurve = .continuous
         openButton.layer?.masksToBounds = true
         openButton.layer?.borderWidth = 1
-        openButton.layer?.borderColor = NSColor(LittlePalette.buttonBorder).cgColor
         addSubview(openButton)
         openPart.wantsLayer = true
         openButton.addSubview(openPart)
@@ -3065,17 +3387,13 @@ final class LittleToolbarView: NSView {
         badge.wantsLayer = true
         badge.layer?.cornerRadius = 4
         badge.layer?.cornerCurve = .continuous
-        badge.layer?.backgroundColor = NSColor(LittlePalette.badge).cgColor
         badgeLabel.stringValue = "⌘O"
-        badgeLabel.textColor = NSColor(LittlePalette.badgeText)
         badge.addSubview(badgeLabel)
         openPart.addSubview(badge)
         divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor(LittlePalette.buttonBorder).cgColor
         openButton.addSubview(divider)
         chevronPart.wantsLayer = true
         chevron.imageScaling = .scaleNone
-        chevron.contentTintColor = NSColor(LittlePalette.label)
         chevronPart.addSubview(chevron)
         openButton.addSubview(chevronPart)
         observe()
@@ -3086,13 +3404,15 @@ final class LittleToolbarView: NSView {
     override var isFlipped: Bool { true }
 
     private func observe() {
-        let (url, hover, popupOpen, space, spaces, profile, waiting) = withObservationTracking {
+        let (url, hover, popupOpen, space, spaces, profile, waiting, tones) = withObservationTracking {
             (state.url, state.hover, state.popupOpen, store.space(state.targetSpaceID) ?? store.focusedSpace, store.spaceOrder.count,
              // Arc's shouldShowProfileIndicators: only once there is a profile besides Default.
-             store.profiles.isEmpty ? nil : store.profile(state.profileID)?.name ?? "Default", state.awaitsFirstResponse)
+             store.profiles.isEmpty ? nil : store.profileName(state.profileID), state.awaitsFirstResponse,
+             state.chromeTones(store: store))
         } onChange: { [weak self] in
             Task { @MainActor in self?.observe() }
         }
+        if tones != self.tones { paint(tones) }
         let chevronShown = LittleMoveMenu.showsChevron(spaces: spaces)
         if state.showsChevron != chevronShown { state.showsChevron = chevronShown }
         divider.isHidden = !chevronShown
@@ -3102,37 +3422,55 @@ final class LittleToolbarView: NSView {
         // Arc keeps the magnifier while a first response is awaited.
         showSecurity(insecure: !waiting && LittleAddress.isInsecure(url))
         pill.toolTip = url
-        pill.layer?.backgroundColor = NSColor(hover == .pill ? LittlePalette.pillHover : LittlePalette.pill).cgColor
+        pill.layer?.backgroundColor = NSColor(hover == .pill ? tones.pillHover : tones.pill).cgColor
         puzzle.hovered = hover == .puzzle
         link.hovered = hover == .link
         profileChip.isHidden = profile == nil
         profileChip.name = profile ?? ""
         profileChip.hovered = hover == .profile
-        let tones = LittlePalette.tones(space.theme)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        gradient.colors = [NSColor(tones.left).cgColor, NSColor(tones.right).cgColor]
-        CATransaction.commit()
         let openTitle = SpaceMenuTitle.named(space.title, prefix: "Open in ")
         let text = NSMutableAttributedString(string: "Open in ", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                                                                             .foregroundColor: NSColor(LittlePalette.label)])
+                                                                             .foregroundColor: NSColor(tones.label)])
         text.append(NSAttributedString(string: openTitle.displayedName, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .bold),
                                                                          .foregroundColor: NSColor(tones.spaceName)]))
         openLabel.attributedStringValue = text
         openButton.toolTip = "Open this page in \(space.title) as a tab (⌘O)"
-        openPart.layer?.backgroundColor = hover == .open ? NSColor(LittlePalette.buttonHover).cgColor : nil
-        chevronPart.layer?.backgroundColor = hover == .chevron ? NSColor(LittlePalette.buttonHover).cgColor : nil
+        openPart.layer?.backgroundColor = hover == .open ? NSColor(tones.buttonHover).cgColor : nil
+        chevronPart.layer?.backgroundColor = hover == .chevron ? NSColor(tones.buttonHover).cgColor : nil
         chevron.image = SidebarSymbols.image(popupOpen ? "chevron.up" : "chevron.down", size: 10, weight: .bold)
         needsLayout = true
+    }
+
+    /// Draws the strip and its controls in `tones`: the page's colour, or Arc's strip for the Mac's
+    /// appearance before the page has one.
+    private func paint(_ tones: LittleChromeTones) {
+        self.tones = tones
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradient.colors = [NSColor(tones.left).cgColor, NSColor(tones.right).cgColor]
+        openButton.layer?.backgroundColor = NSColor(tones.button).cgColor
+        openButton.layer?.borderColor = NSColor(tones.buttonBorder).cgColor
+        badge.layer?.backgroundColor = NSColor(tones.badge).cgColor
+        divider.layer?.backgroundColor = NSColor(tones.buttonBorder).cgColor
+        CATransaction.commit()
+        urlLabel.textColor = NSColor(tones.text)
+        badgeLabel.textColor = NSColor(tones.badgeText)
+        chevron.contentTintColor = NSColor(tones.label)
+        showSecurity(insecure: isInsecure)
+        puzzle.tones = tones
+        link.tones = tones
+        profileChip.tones = tones
+        onStrip?(tones)
     }
 
     /// The pill starts with a magnifier; a page that isn't served over https gets Arc's open padlock
     /// instead, orange on a pale orange tile (#330).
     private func showSecurity(insecure: Bool) {
         isInsecure = insecure
-        search.layer?.backgroundColor = insecure ? LittlePalette.insecure.withAlphaComponent(0.10).cgColor : nil
+        let padlock = tones.map { NSColor($0.padlock) } ?? LittlePalette.insecure
+        search.layer?.backgroundColor = insecure ? padlock.withAlphaComponent(0.10).cgColor : nil
         search.image = SidebarSymbols.image(insecure ? "lock.open" : "magnifyingglass", size: 13, weight: .medium)
-        search.contentTintColor = insecure ? LittlePalette.insecure : NSColor(LittlePalette.icon)
+        search.contentTintColor = insecure ? padlock : tones.map { NSColor($0.icon) }
     }
 
     override func layout() {
@@ -3214,6 +3552,17 @@ final class LittleToolbarView: NSView {
     /// Presses on the empty strip move the window before they get here (mouseDownCanMoveWindow).
     override func mouseDown(with event: NSEvent) {}
 
+    /// cra://debug?littleToolbar=clickOpen: a mouse up on the "Open in" button's name, left of its ⌄ (#852).
+    func debugClickOpen() -> Bool {
+        guard let window, !openButton.isHidden, openButton.frame.width > 0 else { return false }
+        let at = convert(NSPoint(x: openButton.frame.minX + 12, y: openButton.frame.midY), to: nil)
+        guard let up = NSEvent.mouseEvent(with: .leftMouseUp, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)
+        else { return false }
+        mouseUp(with: up)
+        return true
+    }
+
     override func mouseUp(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         if openButton.frame.contains(p) {
@@ -3238,14 +3587,17 @@ final class LittleProfileChip: NSView {
     private let chevron = NSImageView()
     private static let font = NSFont.systemFont(ofSize: 11, weight: .medium)
     var name = "" { didSet { if name != oldValue { label.stringValue = name; needsLayout = true } } }
-    var hovered = false {
-        didSet {
-            layer?.backgroundColor = NSColor.white.withAlphaComponent(hovered ? 46 / 255 : 31 / 255).cgColor
-            let ink = NSColor(hovered ? LittlePalette.iconHot : LittlePalette.text)
-            label.textColor = ink
-            face.ink = ink
-            chevron.contentTintColor = ink
-        }
+    var hovered = false { didSet { paint() } }
+    /// The strip's colours: white at 31/255 on a dark strip as Arc draws it, black on a light one.
+    var tones: LittleChromeTones? { didSet { paint() } }
+
+    private func paint() {
+        guard let tones else { return }
+        layer?.backgroundColor = NSColor(hovered ? tones.chipHover : tones.chip).cgColor
+        let ink = NSColor(hovered ? tones.iconHot : tones.text)
+        label.textColor = ink
+        face.ink = ink
+        chevron.contentTintColor = ink
     }
 
     var fittingWidth: CGFloat {
@@ -3284,11 +3636,13 @@ final class LittleProfileChip: NSView {
 /// Icon in the pill: 26pt hover square, brighter glyph.
 private final class LittleIconView: NSView {
     private let glyph = NSImageView()
-    var hovered = false {
-        didSet {
-            glyph.contentTintColor = NSColor(hovered ? LittlePalette.iconHot : LittlePalette.icon)
-            layer?.backgroundColor = hovered ? NSColor(LittlePalette.iconHover).cgColor : nil
-        }
+    var hovered = false { didSet { paint() } }
+    var tones: LittleChromeTones? { didSet { paint() } }
+
+    private func paint() {
+        guard let tones else { return }
+        glyph.contentTintColor = NSColor(hovered ? tones.iconHot : tones.icon)
+        layer?.backgroundColor = hovered ? NSColor(tones.iconHover).cgColor : nil
     }
 
     init(symbol: String, size: CGFloat) {
@@ -3298,7 +3652,6 @@ private final class LittleIconView: NSView {
         layer?.cornerCurve = .continuous
         glyph.image = SidebarSymbols.image(symbol, size: size)
         glyph.imageScaling = .scaleNone
-        glyph.contentTintColor = NSColor(LittlePalette.icon)
         glyph.frame = bounds
         glyph.autoresizingMask = [.width, .height]
         addSubview(glyph)
@@ -3326,46 +3679,52 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
     private let empty = NSTextField.sidebarLabel(size: 13)
     private var rows: [NSView] = []
     private var list: [Space] = []
+    /// "<space>:<tile>/<icon>" for each row whose space has an icon, for the debug readout.
+    private var iconColors: [String] = []
     private var selected = 0 { didSet { refreshSelection(); revealSelected() } }
     private var revealOnLayout = true
+    /// The strip's colours as the menu opens: Arc's light menu under a light strip, its navy one under a
+    /// dark strip.
+    private let tones: LittleChromeTones
 
     init(state: LittleWindowState, store: SidebarStore, onPick: @escaping (UUID) -> Void, onClose: @escaping () -> Void) {
         self.state = state
         self.store = store
         self.onPick = onPick
         self.onClose = onClose
+        tones = state.chromeTones(store: store)
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = LittlePalette.buttonNS.cgColor
+        layer?.backgroundColor = NSColor(tones.button).cgColor
         layer?.cornerRadius = LittleMoveMenu.cornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         layer?.borderWidth = LittleMoveMenu.border
-        layer?.borderColor = NSColor(LittlePalette.buttonBorder).cgColor
+        layer?.borderColor = NSColor(tones.buttonBorder).cgColor
         let h = LittleMoveMenu.headerHeight
         let glass = NSImageView(frame: NSRect(x: 16, y: 0, width: 14, height: h))
         glass.image = SidebarSymbols.image("magnifyingglass", size: 13, weight: .medium)
-        glass.contentTintColor = NSColor(LittlePalette.moveMenuGlyph)
+        glass.contentTintColor = NSColor(tones.menuGlyph)
         glass.imageScaling = .scaleNone
         addSubview(glass)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 13)
-        field.textColor = NSColor.white.withAlphaComponent(0.9)
+        field.textColor = tones.light ? NSColor(tones.menuTitle) : NSColor.white.withAlphaComponent(0.9)
         field.placeholderAttributedString = NSAttributedString(string: "Search Spaces...", attributes: [
-            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor(LittlePalette.moveMenuPlaceholder)])
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor(tones.menuPlaceholder)])
         field.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.delegate = self
         addSubview(field)
         // Arc 1.172.1: a plain ∧ after an 18 pt rule (1.168 had a filled 28 pt button).
         divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor(LittlePalette.buttonBorder).cgColor
+        divider.layer?.backgroundColor = NSColor(tones.buttonBorder).cgColor
         addSubview(divider)
         let up = NSImageView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
         up.image = SidebarSymbols.image("chevron.up", size: 11, weight: .semibold)
-        up.contentTintColor = NSColor(LittlePalette.moveMenuGlyph)
+        up.contentTintColor = NSColor(tones.menuGlyph)
         up.imageScaling = .scaleNone
         close.addSubview(up)
         addSubview(close)
@@ -3379,7 +3738,7 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
         addSubview(scroll)
         empty.stringValue = "No results"
         empty.alignment = .center
-        empty.textColor = NSColor(LittlePalette.moveMenuGlyph)
+        empty.textColor = NSColor(tones.menuGlyph)
         addSubview(empty)
         rebuild()
     }
@@ -3399,6 +3758,7 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
         let spaces = LittleMoveMenu.order(store.orderedSpaces.map(\.id), target: state.targetSpaceID).compactMap(store.space)
         list = q.isEmpty ? spaces : spaces.filter { $0.title.lowercased().contains(q) }
         rows.forEach { $0.removeFromSuperview() }
+        iconColors = []
         let rh = LittleMoveMenu.rowHeight, ts = LittleMoveMenu.tileSize
         rows = list.map { s in
             let row = FlippedView()
@@ -3407,7 +3767,8 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
             tile.wantsLayer = true
             tile.layer?.cornerRadius = LittleMoveMenu.tileRadius
             tile.layer?.cornerCurve = .continuous
-            tile.layer?.backgroundColor = NSColor(hex: s.theme.shown.accent ?? s.theme.shown.colors.first ?? "#888888").cgColor
+            let fill = s.theme.shown.accent ?? s.theme.shown.colors.first ?? "#888888"
+            tile.layer?.backgroundColor = NSColor(hex: fill).cgColor
             // Arc 1.172.1: a 12 pt emoji, centred (a 🍎 12.5 pt wide in the 26 pt tile).
             let emoji = NSTextField.sidebarLabel(size: 12)
             emoji.stringValue = s.emoji
@@ -3418,13 +3779,16 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
                 let glyph = NSImageView(frame: NSRect(x: 0, y: 0, width: ts, height: ts))
                 glyph.image = image
                 glyph.imageScaling = .scaleNone
-                glyph.contentTintColor = .white
+                let icon = LittleMoveMenu.iconColor(onTile: fill)
+                glyph.contentTintColor = NSColor(icon)
+                iconColors.append(String(format: "%@:%@/#%02X%02X%02X", s.title, fill, Int((icon.r * 255).rounded()),
+                                         Int((icon.g * 255).rounded()), Int((icon.b * 255).rounded())))
                 tile.addSubview(glyph)
             }
             row.addSubview(tile)
             let title = NSTextField.sidebarLabel(size: LittleMoveMenu.titleSize, weight: .semibold)
             title.stringValue = s.title
-            title.textColor = NSColor.white.withAlphaComponent(0.82)
+            title.textColor = NSColor(tones.menuTitle)
             let tx = LittleMoveMenu.textX
             title.frame = NSRect(x: tx - SidebarText.inset, y: (rh - 16) / 2,
                                  width: LittleMoveMenu.width - tx - 14 + 2 * SidebarText.inset, height: 16)
@@ -3434,9 +3798,9 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
         }
         empty.isHidden = !list.isEmpty
         // The menu grows and shrinks with the list, its top edge where it was.
-        if let window {
-            let f = window.frame, h = LittleMoveMenu.frame(rows: list.count, in: .zero).height
-            if f.height != h { window.setFrame(NSRect(x: f.minX, y: f.maxY - h, width: f.width, height: h), display: true) }
+        if let panel = window as? LittlePopupPanel {
+            let f = panel.menuFrame, h = LittleMoveMenu.frame(rows: list.count, in: .zero).height
+            if f.height != h { panel.menuFrame = NSRect(x: f.minX, y: f.maxY - h, width: f.width, height: h) }
         }
         needsLayout = true
         refreshSelection()
@@ -3444,7 +3808,7 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
 
     private func refreshSelection() {
         for (i, r) in rows.enumerated() {
-            r.layer?.backgroundColor = i == selected ? NSColor(LittlePalette.buttonHover).cgColor : nil
+            r.layer?.backgroundColor = i == selected ? NSColor(tones.buttonHover).cgColor : nil
         }
     }
 
@@ -3479,8 +3843,8 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
 
     // MARK: Debug (cra://debug?littleMenu=…)
 
-    /// rows, the first row, the highlighted one, how far the list is scrolled and whether the
-    /// highlighted row is whole in view.
+    /// rows, the first row, the highlighted one, how far the list is scrolled, whether the
+    /// highlighted row is whole in view, and each space icon's tile and colour.
     var debugState: String {
         layoutSubtreeIfNeeded()
         let clip = scroll.contentView.bounds
@@ -3488,6 +3852,8 @@ final class LittleSpacesPopup: NSView, NSTextFieldDelegate {
         let name = { (i: Int) in self.list.indices.contains(i) ? self.list[i].title : "-" }
         return String(format: "rows=%d first=%@ selected=%@ scroll=%.0f inView=%d empty=%d", list.count, name(0), name(selected),
                       clip.minY, shown ? 1 : 0, empty.isHidden ? 0 : 1)
+            + " fill=\(Color(tones.button).hexString) names=\(Color(tones.menuTitle).hexString)"
+            + (iconColors.isEmpty ? "" : " icons=" + iconColors.joined(separator: ","))
     }
 
     func debugMove(down n: Int) {

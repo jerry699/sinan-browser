@@ -21,6 +21,8 @@ struct SiteControlCenterActions {
     var manageExtensions: () -> Void = {}
     var clearCache: () -> Void = {}
     var clearCookies: () -> Void = {}
+    /// Cra's "Clear Site Data" (#853): everything the page's origin keeps, then a reload past the cache.
+    var clearSiteData: () -> Void = {}
     var siteSettings: () -> Void = {}
     /// The lock: the page's certificate. nil without one (http, Chromium's pages).
     var showCertificate: (() -> Void)?
@@ -59,10 +61,11 @@ final class SiteControlCenterView: NSView {
     private let store: SidebarStore
     /// The page's Chromium profile folder: only its extensions are offered.
     private let profile: String
+    /// An incognito page: only the extensions its profile allows in incognito are offered (#620).
+    private let incognito: Bool
     /// The page's tab, whose extension icons the tiles show.
     private let tab: UUID?
-    /// A WebKit page's service ("Spotify"): the card that says why takes the extensions' place,
-    /// and the ad blocker's switch goes (it is Chromium's).
+    /// A WebKit page's service ("Spotify"): the card that says why takes the extensions' place.
     private let protectedMedia: String?
     /// The Safari's Engine row, nil without it (a page that uses no DRM).
     private let safariEngine: SafariEngineRow?
@@ -70,13 +73,14 @@ final class SiteControlCenterView: NSView {
     /// The tiles by extension ID, whose icons follow the extensions' own changes in place.
     private var extensionTiles: [String: SiteExtensionTile] = [:]
 
-    init(url: String, secure: Bool, dark: Bool, profile: String, tab: UUID?, protectedMedia: String? = nil,
+    init(url: String, secure: Bool, dark: Bool, profile: String, incognito: Bool = false, tab: UUID?, protectedMedia: String? = nil,
          safariEngine: SafariEngineRow? = nil, actions: SiteControlCenterActions, store: SidebarStore) {
         self.protectedMedia = protectedMedia
         self.safariEngine = safariEngine
         self.url = url
         self.secure = secure
         self.profile = profile
+        self.incognito = incognito
         self.tab = tab
         colors = SiteControlCenterColors(dark: dark)
         self.actions = actions
@@ -96,11 +100,55 @@ final class SiteControlCenterView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// The popover's frame draws its arrow in the popover's own material, a lighter grey than this view's
+    /// fill, so the arrow read as a separate shape with a seam (GitHub #723). The same fill behind the frame,
+    /// which keeps the popover's shape, makes arrow and body one, as Arc's are.
+    private(set) var arrowFill: NSView?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let frame = window?.contentView?.superview, arrowFill?.superview !== frame else { return }
+        arrowFill?.removeFromSuperview()
+        let fill = NSView(frame: frame.bounds)
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = colors.background.cgColor
+        fill.autoresizingMask = [.width, .height]
+        frame.addSubview(fill, positioned: .below, relativeTo: nil)
+        arrowFill = fill
+    }
+
     var onResize: (NSSize) -> Void = { _ in }
+
+    /// The extension ringed by ⌘E's picker (ExtensionPicker, #709), by its place in the grid; nil: none.
+    var picked: Int? { didSet { if picked != oldValue { showPicked() } } }
+
+    /// The extensions the grid shows, in its order: none while a WebKit page's card takes their place.
+    var extensionCount: Int { protectedMedia == nil ? orderedExtensions.count : 0 }
+
+    /// The ringed extension's name, for `cra://debug?siteControlsRead`.
+    var pickedName: String? { pickedEntry?.name }
+
+    private var pickedEntry: ExtensionStore.Entry? {
+        guard let i = picked, protectedMedia == nil else { return nil }
+        let all = orderedExtensions
+        return all.indices.contains(i) ? all[i] : nil
+    }
+
+    /// ⌘ let go: the ringed extension runs, as a click on its tile does. False when nothing is ringed.
+    func runPicked() -> Bool {
+        guard let e = pickedEntry else { return false }
+        actions.runExtension(e.extensionID)
+        return true
+    }
+
+    private func showPicked() {
+        let id = pickedEntry?.extensionID
+        for (tileID, tile) in extensionTiles { tile.ringed = tileID == id }
+    }
 
     /// Arc: pinned extensions in toolbar order, then the rest by name.
     private var orderedExtensions: [ExtensionStore.Entry] {
-        extensions.pinned.menuOrder(extensions.entries(inProfile: profile), inProfile: profile, id: \.extensionID, name: \.name)
+        extensions.pinned.menuOrder(extensions.entries(inProfile: profile, incognito: incognito), inProfile: profile, id: \.extensionID, name: \.name)
     }
 
     private func observe() {
@@ -171,6 +219,7 @@ final class SiteControlCenterView: NSView {
                 ext.addSubview(t)
             }
             for case let t as SiteExtensionTile in tiles { ext.addSubview(t.badge) }
+            showPicked()
             let rows = (tiles.count + 3) / 4
             let extH = 27 + CGFloat(rows) * M.tile.height + CGFloat(rows - 1) * M.gap
             ext.frame = NSRect(x: x, y: y, width: w, height: extH)
@@ -200,14 +249,15 @@ final class SiteControlCenterView: NSView {
         let autoPiP = store.settings.allowsAutoPictureInPicture(url: url)
         let store = store, url = url
         var rowsSpec: [(String, String, String, Bool, () -> Void)] = [
-            ("hammer.fill", L10n.tr("Developer Mode"), L10n.tr(developer ? "On" : "Off"), developer, { store.settings.toggleDeveloperMode(url: url) }),
-            ("shield.fill", L10n.tr("Block Ads & Trackers"), L10n.tr(store.settings.blockAdsAndTrackers ? "On" : "Off"),
-             store.settings.blockAdsAndTrackers, { store.settings.blockAdsAndTrackers.toggle() }),
-            ("gearshape.fill", L10n.tr("Automatic Picture-In-Picture"), L10n.tr(autoPiP ? "Allowed" : "Disabled"),
-             autoPiP, { store.settings.toggleAutoPictureInPicture(url: url) }),
+            ("hammer.fill", "Developer Mode", developer ? "On" : "Off", developer, { store.settings.toggleDeveloperMode(url: url) }),
+            ("gearshape.fill", "Automatic Picture-In-Picture", autoPiP ? "Allowed" : "Disabled",             autoPiP, { store.settings.toggleAutoPictureInPicture(url: url) }),
         ]
-        // Chromium's blocker doesn't see a WebKit page: no switch that does nothing there.
-        if protectedMedia != nil { rowsSpec.remove(at: 1) }
+        // WebKit pages block with the same lists (WebKitContentBlocking), so the switch is on both engines.
+        if let host = AppSettings.filterHost(url) {
+            let active = store.settings.pausedFilterHosts?.contains(host) != true
+            rowsSpec.insert(("shield.fill", "Ad Blocking", active ? "On" : "Off · Reload page",
+                             active, { store.settings.toggleFilters(on: host) }), at: 1)
+        }
         // A page that plays DRM, or one in WebKit: which engine plays this site, or for a mixed
         // site (YouTube) its protected videos or just this one (docs/protected-media.md).
         if let row = safariEngine {
@@ -457,6 +507,32 @@ private final class SiteExtensionTile: SiteTile {
     override func setFrameOrigin(_ newOrigin: NSPoint) {
         super.setFrameOrigin(newOrigin)
         badge.frame = NSRect(x: newOrigin.x + 37, y: newOrigin.y + 21, width: 14, height: 14)
+    }
+
+    /// Ringed by ⌘E's picker (#709). Arc 1.172: a 2 pt line in the accent colour (the pinned badge's) centred
+    /// on the tile's edge, 1 pt outside it and 1 pt in; the tile's fill stays as it is.
+    var ringed = false {
+        didSet {
+            guard ringed != oldValue else { return }
+            ring.isHidden = !ringed
+            setAccessibilityValue(ringed ? "Selected" : nil)
+        }
+    }
+
+    private lazy var ring: CALayer = {
+        let r = CALayer()
+        r.borderWidth = 2
+        r.borderColor = colors.accent.cgColor
+        r.cornerRadius = 8
+        r.cornerCurve = .continuous
+        r.isHidden = true
+        layer?.addSublayer(r)
+        return r
+    }()
+
+    override func layout() {
+        super.layout()
+        ring.frame = bounds.insetBy(dx: -1, dy: -1)
     }
 
     override func refresh() {
@@ -742,12 +818,15 @@ private final class SiteSecurityPill: SiteHoverView {
     }
 }
 
-/// Arc's footer "…": Clear Cache, Clear Cookies, Manage Extensions, Add Extension, All Site Settings.
+/// Arc's footer "…": Clear Cache, Clear Cookies, Manage Extensions, Add Extension, All Site Settings, with Cra's
+/// Clear Site Data after Arc's two clearing rows (CraCore SiteMoreMenu, #853).
 private final class SiteMoreButton: SiteHoverView {
     private let colors: SiteControlCenterColors
+    private let actions: SiteControlCenterActions
 
     init(colors: SiteControlCenterColors, actions: SiteControlCenterActions) {
         self.colors = colors
+        self.actions = actions
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 16
@@ -759,29 +838,50 @@ private final class SiteMoreButton: SiteHoverView {
         _ = ArcTooltipAnchorView.attach(to: self, help: "More")
         setAccessibilityLabel("More")
         setAccessibilityRole(.button)
-        onClick = {
-            let menu = NSMenu()
-            func add(_ title: String, _ action: @escaping () -> Void) { menu.addItem(BlockMenuItem(title: title, action: action)) }
-            add("Clear Cache", actions.clearCache)
-            add("Clear Cookies", actions.clearCookies)
-            menu.addItem(.separator())
-            // Arc 1.172.2's order.
-            add("Manage Boosts…", actions.manageBoosts)
-            let newBoost = BlockMenuItem(title: "New Boost…", action: { actions.newBoost?() })
-            newBoost.isEnabled = actions.newBoost != nil
-            menu.autoenablesItems = false
-            menu.addItem(newBoost)
-            menu.addItem(.separator())
-            add("Manage Extensions…", actions.manageExtensions)
-            add("Add Extension…", actions.addExtension)
-            menu.addItem(.separator())
-            add("All Site Settings", actions.siteSettings)
+        onClick = { [weak self] in
+            guard let self else { return }
+            let menu = Self.menu(self.actions)
             menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         }
         refresh()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The menu, its rows from SiteMoreMenu. New Boost… is off without a page that takes a boost.
+    static func menu(_ actions: SiteControlCenterActions) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for group in SiteMoreMenu.groups {
+            if menu.numberOfItems > 0 { menu.addItem(.separator()) }
+            for row in group {
+                let run: () -> Void
+                switch row {
+                case .clearCache: run = actions.clearCache
+                case .clearCookies: run = actions.clearCookies
+                case .clearSiteData: run = actions.clearSiteData
+                case .manageBoosts: run = actions.manageBoosts
+                case .newBoost: run = { actions.newBoost?() }
+                case .manageExtensions: run = actions.manageExtensions
+                case .addExtension: run = actions.addExtension
+                case .allSiteSettings: run = actions.siteSettings
+                }
+                let item = BlockMenuItem(title: row.title, action: run)
+                if row == .newBoost { item.isEnabled = actions.newBoost != nil }
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    /// cra://debug?siteControlsPress=More:<row>: the "…" menu's row run as a pick would, or its rows listed.
+    func debugPick(_ title: String) -> String {
+        let menu = Self.menu(actions)
+        let titles = menu.items.map { $0.isSeparatorItem ? "-" : $0.title }.joined(separator: "|")
+        guard let item = menu.items.first(where: { $0.title == title }) as? BlockMenuItem else { return "more menu: \(titles)" }
+        item.perform()
+        return "more menu picked \(title): \(titles)"
+    }
 
     override func refresh() {
         // SwiftUI's .brightness(0.04) on hover.
@@ -800,6 +900,8 @@ final class BlockMenuItem: NSMenuItem {
     }
     required init(coder: NSCoder) { fatalError() }
     @objc private func run() { block() }
+    /// What a pick runs (SiteMoreButton.debugPick).
+    func perform() { block() }
 }
 
 /// Shows the Site Control Center in an NSPopover under a toolbar or pill button.
@@ -827,11 +929,11 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         return closedByThisClick
     }
 
-    func show(relativeTo rect: NSRect, of view: NSView, url: String, secure: Bool, dark: Bool, profile: String, tab: UUID?,
+    func show(relativeTo rect: NSRect, of view: NSView, url: String, secure: Bool, dark: Bool, profile: String, incognito: Bool = false, tab: UUID?,
               protectedMedia: String? = nil, safariEngine: SafariEngineRow? = nil, toggleChecked: Bool = false,
               store: SidebarStore, actions: SiteControlCenterActions) {
-        if !toggleChecked, closesInstead() { return }
-        if let popover, popover.isShown { popover.performClose(nil) }
+        if !toggleChecked, closesInstead() { endPicking(); return }
+        if let popover, popover.isShown { replacing = true; popover.performClose(nil); replacing = false }
         let p = NSPopover()
         p.behavior = .transient
         p.animates = true
@@ -850,6 +952,7 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         acts.siteSettings = closing(actions.siteSettings)
         acts.clearCache = closing(actions.clearCache)
         acts.clearCookies = closing(actions.clearCookies)
+        acts.clearSiteData = closing(actions.clearSiteData)
         acts.showCertificate = actions.showCertificate.map(closing)
         acts.learnAboutProtectedMedia = closing(actions.learnAboutProtectedMedia)
         // The page opens again in the other engine: the popover's content would be the old page's.
@@ -857,7 +960,7 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         acts.newBoost = actions.newBoost.map(closing)
         acts.editBoost = { [weak p] id in p?.performClose(nil); actions.editBoost(id) }
         acts.manageBoosts = closing(actions.manageBoosts)
-        let content = SiteControlCenterView(url: url, secure: secure, dark: dark, profile: profile, tab: tab, protectedMedia: protectedMedia,
+        let content = SiteControlCenterView(url: url, secure: secure, dark: dark, profile: profile, incognito: incognito, tab: tab, protectedMedia: protectedMedia,
                                             safariEngine: safariEngine, actions: acts, store: store)
         let host = NSViewController()
         host.view = content
@@ -866,12 +969,89 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         p.contentViewController = host
         popover = p
         p.show(relativeTo: rect, of: view, preferredEdge: .minY)
+        showPicked()
+        if letGoBeforeShown { letGo() }
     }
+
+    /// An old popover closing for a new one: a picker started for the new one goes on.
+    private var replacing = false
 
     func close() { popover?.performClose(nil) }
 
+    // MARK: ⌘E's picker (#709)
+
+    private var picker: ExtensionPicker?
+    private var pickerMonitors: [Any] = []
+    /// ⌘ was let go before the popover was up (it waits up to 0.3 s on the page): it runs once it is.
+    private var letGoBeforeShown = false
+
+    var isPicking: Bool { picker != nil }
+
+    private var content: SiteControlCenterView? { popover?.contentViewController?.view as? SiteControlCenterView }
+
+    /// Rings the first extension and follows the keyboard: `isPickerKey` (the Open Extensions shortcut) rings the
+    /// next one, letting go of ⌘ runs the ringed one, Esc closes. The popover is up or about to be.
+    func startPicking(isPickerKey: @escaping (NSEvent) -> Bool) {
+        endPicking()
+        picker = ExtensionPicker()
+        letGoBeforeShown = false
+        showPicked()
+        pickerMonitors = [
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                MainActor.assumeIsolated {
+                    guard let self, self.picker != nil else { return event }
+                    if event.keyCode == 53 { self.endPicking(); self.close(); return nil }
+                    guard isPickerKey(event) else { return event }
+                    self.step()
+                    return nil
+                }
+            },
+            NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                MainActor.assumeIsolated {
+                    if !event.modifierFlags.contains(.command) { self?.letGo() }
+                    return event
+                }
+            },
+        ].compactMap { $0 }
+    }
+
+    /// The shortcut again, ⌘ still held: the next extension.
+    func step() {
+        picker?.press()
+        showPicked()
+    }
+
+    private func showPicked() {
+        guard let picker, let content else { return }
+        content.picked = picker.picked(among: content.extensionCount)
+    }
+
+    private func letGo() {
+        guard picker != nil else { return }
+        guard let content, popover?.isShown == true else {
+            // Shown within the page's 0.3 s, it runs then; a popover that never came (no window) ends the picker.
+            letGoBeforeShown = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self, self.letGoBeforeShown, self.popover?.isShown != true else { return }
+                self.endPicking()
+            }
+            return
+        }
+        endPicking()
+        // Nothing ringed (no extensions): the Site Control Center stays up, as opened by its button.
+        let name = content.pickedName
+        if content.runPicked() { CraLog.note("extension picker: runs \(name ?? "?")") } else { content.picked = nil }
+    }
+
+    private func endPicking() {
+        pickerMonitors.forEach(NSEvent.removeMonitor)
+        pickerMonitors = []
+        picker = nil
+        letGoBeforeShown = false
+    }
+
     /// cra://debug?siteControlsRead=1 (#478): "site controls: actions=Share|New Boost|… boosts=My Boost, Enabled|…".
-    func debugRead() {
+    func debugRead(label: String = "1") {
         guard let root = popover?.contentViewController?.view, popover?.isShown == true else { return CraLog.note("site controls: closed") }
         var actions: [String] = [], rows: [String] = []
         func walk(_ v: NSView) {
@@ -881,6 +1061,8 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         }
         walk(root)
         CraLog.note("site controls: actions=\(actions.joined(separator: "|")) boosts=\(rows.joined(separator: "|"))")
+        // The extension ⌘E's picker rings (#709), under the read's label.
+        CraLog.note("site controls picked \(label): \((root as? SiteControlCenterView)?.pickedName ?? "none")")
         // The Settings rows, each "title, state" ("Safari’s Engine, This Video").
         var settings: [String] = []
         func rowsOf(_ v: NSView) {
@@ -889,6 +1071,17 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         }
         rowsOf(root)
         CraLog.note("site controls settings: \(settings.joined(separator: "|"))")
+        // The arrow's fill (#723): the colour behind the popover's frame, which draws the arrow, against the body's.
+        let view = root as? SiteControlCenterView
+        let hex = { (c: CGColor?) -> String in
+            guard let rgb = c.flatMap({ NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }) else { return "none" }
+            let byte = { (v: CGFloat) -> Int in Int((v * 255).rounded()) }
+            return String(format: "#%02X%02X%02X", byte(rgb.redComponent), byte(rgb.greenComponent), byte(rgb.blueComponent))
+        }
+        let frame = view?.arrowFill?.superview
+        CraLog.note("site controls arrow \(label): fill=\(hex(view?.arrowFill?.layer?.backgroundColor)) body=\(hex(root.layer?.backgroundColor))"
+                    + " behindFrame=\(frame != nil && frame === root.window?.contentView?.superview && frame?.subviews.first === view?.arrowFill ? 1 : 0)"
+                    + " window=\(root.window?.windowNumber ?? 0)")
     }
 
     /// cra://debug?siteControlsPress=<label>[&accessory=1] (#478): the button or row with that
@@ -900,6 +1093,11 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
             if (v is SiteActionButton || v is SiteSettingRow || v is SiteExtensionTile), v.accessibilityLabel() == label { return v }
             for s in v.subviews { if let f = find(s) { return f } }
             return nil
+        }
+        // "More:<row>" (or "More:" to list them): a row of the "…" menu, which a scenario can't pop up (#853).
+        if label.hasPrefix("More:") {
+            func more(_ v: NSView) -> SiteMoreButton? { (v as? SiteMoreButton) ?? v.subviews.lazy.compactMap(more).first }
+            return CraLog.note("site controls \(more(root)?.debugPick(String(label.dropFirst(5))) ?? "more menu: no button")")
         }
         guard let v = find(root) else { return CraLog.note("site controls press: no \(label)") }
         if accessory, let row = v as? SiteSettingRow { row.pressAccessory() } else { _ = v.accessibilityPerformPress() }
@@ -914,7 +1112,11 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         if let e = NSApp.currentEvent, e.type == .leftMouseDown { closingClick = e.timestamp }
     }
 
-    func popoverDidClose(_ notification: Notification) { popover = nil }
+    func popoverDidClose(_ notification: Notification) {
+        guard (notification.object as? NSPopover) === popover else { return }
+        popover = nil
+        if !replacing { endPicking() }
+    }
 }
 
 /// The Site Control Center's share list (GitHub #90). macOS finds the share extensions the

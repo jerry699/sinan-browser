@@ -30,6 +30,8 @@ final class SidebarView: NSView {
     var debugURLFieldState: String { topBar.debugURLFieldState }
     /// The URL field edited in place puts the address back (#344).
     func endAddressEditing() { topBar.endAddressEditing() }
+    /// The URL field is being edited in place (#344).
+    var isEditingAddress: Bool { topBar.isEditingAddress }
     func debugURLFieldType(_ text: String, commit: Bool) -> Bool { topBar.debugURLFieldType(text, commit: commit) }
     /// Scenario hooks (#648): the header's address row, and a press on its ← → ↻.
     var debugAddressRow: String { topBar.debugAddressRow }
@@ -38,6 +40,9 @@ final class SidebarView: NSView {
     private let trayHost: DownloadsTrayView
     private let player: NowPlayingTrayView
     private let trayMask = CAGradientLayer()
+    /// Whether the space pages' mask is still catching up with the column's size, which shows the next space's
+    /// column past the column's edge (PagerMask, #679), for cra.log.
+    var pagesMaskTrails: Bool { PagerMask.trails(trayMask) }
     private let bannerHost = UpdateBannerView()
     private let dock: SpaceDockView
     /// Arc's "+" past the last space, over the column (NewSpaceSwipe).
@@ -52,12 +57,27 @@ final class SidebarView: NSView {
     private var libraryHost: LibraryView?
     /// Scenarios (#649): the Library's first download row hovered, its ••• and menu.
     var debugLibraryDownloadMore: String { libraryHost?.debugDownloadMore() ?? "no library" }
+    /// cra://debug?libraryRail=<page>: see LibraryRailView.debug.
+    func debugLibraryRail(page: LibraryPage, hover: Bool?, press: Bool?, done: @escaping (String) -> Void) {
+        guard let libraryHost else { return done("no library") }
+        libraryHost.debugRail(page: page, hover: hover, press: press, done: done)
+    }
+    /// The Library rail's back arrow (#726); false with no Library up.
+    func debugLibraryBack() -> Bool {
+        guard let libraryHost else { return false }
+        libraryHost.debugBack()
+        return true
+    }
     /// Arc's Create a Space page, over the space's column while one is being made.
     private var creationHost: SpaceCreationView?
     var debugSpaceCreation: String { creationHost?.debugLine ?? "none" }
     var debugDockLine: String { dock.debugLine }
     func debugTypeSpaceName(_ text: String) { creationHost?.debugType(text) }
     func debugSpaceCreationTip(_ row: String) -> String { creationHost?.debugTip(row) ?? "none" }
+    /// For scenarios (#822): the colours the dock's + menu opens with.
+    func debugCreationMenuColors() -> String { dock.debugCreationMenuColors() }
+    /// The colours the header's ••• menu opens with (#822).
+    func moreMenuColors() -> SidebarCreationMenuColors { topBar.moreMenuColors() }
     func closeSpaceCreationPopovers() { creationHost?.closeIconPicker() }
     func focusSpaceCreationName() { creationHost?.focusName() }
     /// The creation animation, then `done`; at once when the page isn't up.
@@ -69,6 +89,8 @@ final class SidebarView: NSView {
     private(set) var palette: SpacePalette
     private var lastSpaceID: UUID?
     private var shownTheme: SpaceTheme?
+    /// The player's colour setting and the glass it was drawn for (Ideas #366), to recolour it on a change.
+    private var shownPlayerLook: (tint: NowPlayingTint, glass: Bool)?
     private var shownLibrary: LibraryPage?
 
     init(store: SidebarStore, ui: SidebarUIState, actions: SidebarActions, favicons: FaviconCache) {
@@ -155,6 +177,12 @@ final class SidebarView: NSView {
         v.tailX = bin.midX - 8
     }
 
+    /// cra://debug's readout of the now-playing cards' fill (Ideas #366).
+    var debugPlayerFill: String { player.debugFillHex }
+    /// cra://debug's readout of the player's cards, front first (Discussion #761).
+    var debugPlayerCards: [String] { player.debugCards }
+    func debugSetPlayerOpen(_ open: Bool) { player.debugSetOpen(open) }
+
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
@@ -164,13 +192,20 @@ final class SidebarView: NSView {
         let (space, library, trayOpen, recentCount) = withObservationTracking {
             let space = store.focusedSpace(window: ui.windowID)
             _ = SystemAppearance.shared.isDark
+            _ = store.settings.nowPlayingTint
+            _ = store.settings.nowPlayingStyle
+            _ = SidebarGlassSetting.shared.isOn
             bannerHeight = UpdateBannerView.preferredHeight
             return (space, ui.libraryPage, ui.downloadsListOpen, DownloadHistory.shared.recent.count)
         } onChange: { [weak self] in
             Task { @MainActor in self?.observe() }
         }
+        let playerLook = (tint: store.settings.nowPlayingTint, glass: SidebarGlassSetting.shared.isOn)
+        player.setStyle(store.settings.nowPlayingStyle)
         let paletteChanged = lastSpaceID == nil || space.theme.shown != shownTheme || space.id != lastSpaceID
+            || shownPlayerLook.map { $0 != playerLook } ?? true
         shownTheme = space.theme.shown
+        shownPlayerLook = playerLook
         if space.id != lastSpaceID {
             // A drag that hovered another space's icon carries the picks there; its end clears them.
             if lastSpaceID != nil, ui.draggingID == nil { ui.clearPicks() }
@@ -183,7 +218,8 @@ final class SidebarView: NSView {
             bannerHost.colors = colors
             let shown = space.theme.shown
             bannerHost.themeColor = shown.accent ?? shown.colors.first
-            player.setTheme(shown.accent ?? shown.colors.first, dark: palette.isDark)
+            player.setTheme(shown.accent ?? shown.colors.first, dark: palette.isDark, tint: playerLook.tint,
+                            ground: NSColor(palette.playerGround))
             libraryHost?.palette = palette
             creationHost?.palette = palette
             newSpacePlus.ink = colors.textPrimary
@@ -286,14 +322,11 @@ final class SidebarView: NSView {
         let clearTop = max(0, h - DownloadsTrayMetrics.listHeight(rows: rows) - 1)
         let fadeTop = max(0, clearTop - DownloadsTrayMetrics.fade)
         let over = MusicNotes.overhang
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(open ? 0.18 : 0.13)
-        if !open { CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut)) }
-        trayMask.frame = NSRect(x: 0, y: -over, width: pager.bounds.width, height: pager.bounds.height + over)
-        trayMask.locations = [0, NSNumber(value: Double((fadeTop + over) / (h + over))), NSNumber(value: Double((clearTop + over) / (h + over))), 1]
         let opaque = NSColor.black.cgColor, clear = NSColor.clear.cgColor
-        trayMask.colors = open ? [opaque, opaque, clear, clear] : [opaque, opaque, opaque, opaque]
-        CATransaction.commit()
+        // Its size follows the column at once; only the fade eases (PagerMask, #679).
+        PagerMask.place(trayMask, frame: NSRect(x: 0, y: -over, width: pager.bounds.width, height: pager.bounds.height + over),
+                        locations: [0, NSNumber(value: Double((fadeTop + over) / (h + over))), NSNumber(value: Double((clearTop + over) / (h + over))), 1],
+                        colors: open ? [opaque, opaque, clear, clear] : [opaque, opaque, opaque, opaque], opening: open)
         if pager.layer?.mask !== trayMask { pager.layer?.mask = trayMask }
         trayHost.isHidden = rows == 0
     }
@@ -304,6 +337,7 @@ final class SidebarView: NSView {
         guard page != shownLibrary, ui.libraryReveal == nil else { return }
         let opening = shownLibrary == nil && page != nil
         shownLibrary = page
+        if opening { ScreenshotWatcher.shared.libraryOpened() }
         if let page {
             let host = libraryHost ?? makeLibraryHost(page)
             host.page = page
@@ -444,7 +478,7 @@ final class SidebarView: NSView {
         bannerHost.frame = NSRect(x: 0, y: bannerTop, width: b.width, height: bannerHeight)
         // The player rests where the list ends and takes that room from it; opened, it grows over the list.
         player.frame = NSRect(x: 0, y: th, width: b.width, height: max(0, bannerTop - th))
-        let listBottom = bannerTop - NowPlayingMetrics.restHeight(cards: player.shownCount)
+        let listBottom = bannerTop - player.restHeight
         // While a space is being made its page stands where the column was, and the column is off to the left.
         pager.frame = NSRect(x: creationHost != nil ? -b.width * (1 - creationPull) : 0, y: th, width: b.width, height: max(0, listBottom - th))
         creationClip?.frame = creationFrame
@@ -530,6 +564,7 @@ final class SidebarTopBarView: NSView {
     }
     func debugURLFieldType(_ text: String, commit: Bool) -> Bool { !pill.isHidden && pill.debugType(text, commit: commit) }
     func endAddressEditing() { pill.endEditing(commit: false) }
+    var isEditingAddress: Bool { !pill.isHidden && pill.isEditing }
     var debugURLFieldState: String { pill.isHidden ? "hidden" : pill.editingText.map { "editing \($0)" } ?? "not editing" }
 
     /// Scenarios (#648): the address row as it stands, "url=<the field's address> back=1 forward=0".
@@ -653,6 +688,9 @@ final class SidebarTopBarView: NSView {
             buttons[k] = nil
         }
         rowButtons = shown
+        // The regular header's 32 pt buttons stand 2 pt apart, as in Arc; clicks reach across half of each gap (#818).
+        // The narrow and Developer Mode rows touch already.
+        for b in shown { b.hitOutset = narrow || (devNav && b !== toggle) ? 0 : CGFloat(SidebarHeaderLayout.hitOutset) }
         toggleShown = !narrow
         if devNav, !narrow, chevron == nil {
             let c = DevMenuChevron(actions: actions)
@@ -680,7 +718,8 @@ final class SidebarTopBarView: NSView {
             let ext = ExtensionStore.shared
             let profile = tab.map { store.profileDirectoryName(item: $0.id) }
                 ?? store.profileDirectoryName(space: store.focusedSpaceID(window: ui.windowID))
-            let entries = ext.entries(inProfile: profile)
+            let incognito = tab.map { store.isIncognito(item: $0.id) } ?? store.isIncognito(space: store.focusedSpaceID(window: ui.windowID))
+            let entries = ext.entries(inProfile: profile, incognito: incognito)
             let pinned = ext.pinnedIDs(inProfile: profile).compactMap { id in
                 entries.first { $0.extensionID == id }.map {
                     (id, $0.name, ext.badged(ext.toolbarIcon(for: $0, profile: profile, tab: tab?.id),
@@ -693,6 +732,7 @@ final class SidebarTopBarView: NSView {
             let popups = tab.map { ui.navState(for: $0.id).blockedPopups } ?? 0
             let line = popups > 0 ? BlockedPopups.buttonTitle(count: popups)
                 : translation?.offersTranslation == true ? (narrowWidth ? "Translate" : "Translation Available") : nil
+            pill.pinsProfile = profile
             pill.show(text: text, url: url, hasTab: tab != nil, colors: colors, active: active,
                       pinned: pinned, protectedMedia: tab.flatMap { ui.navState(for: $0.id).protectedMedia },
                       translate: line,
@@ -719,16 +759,17 @@ final class SidebarTopBarView: NSView {
         // Arc draws it from 20 pt in (glyph 20–38.5 pt), in the floating panel too (#315); a windowed
         // floating panel draws stand-in lights.
         // It moves left to stay 2 pt clear of ← when the sidebar is just wide enough for both.
+        // Every glyph in the row is centred on the lights, as in Arc (#876: Cra drew them 1 pt higher).
         let lights = !fullscreen
         let nav = toggleShown ? Array(rowButtons.dropFirst()) : rowButtons
         let afterLights: CGFloat = lights ? 6 + 71 + 2 : 13
         if toggleShown, let t = rowButtons.first {
             let size = t.size.width
-            t.frame = NSRect(x: afterLights, y: CraMetrics.titleRowCenter - 1 - size / 2, width: size, height: size)
+            t.frame = NSRect(x: afterLights, y: CraMetrics.titleRowCenter - size / 2, width: size, height: size)
         }
         if narrow {
             for (b, box) in zip(nav, SidebarHeaderLayout.navButtons(width: Double(w))) {
-                b.frame = NSRect(x: box.x, y: CraMetrics.titleRowCenter - 1 - box.size / 2, width: box.size, height: box.size)
+                b.frame = NSRect(x: box.x, y: CraMetrics.titleRowCenter - box.size / 2, width: box.size, height: box.size)
             }
         }
         if compact {
@@ -736,7 +777,7 @@ final class SidebarTopBarView: NSView {
             // edge, centred on the same line.
             if !narrow {
                 for (b, box) in zip(nav, SidebarHeaderLayout.navButtons(width: Double(w))) {
-                    b.frame = NSRect(x: box.x, y: CraMetrics.titleRowCenter - 1 - box.size / 2, width: box.size, height: box.size)
+                    b.frame = NSRect(x: box.x, y: CraMetrics.titleRowCenter - box.size / 2, width: box.size, height: box.size)
                 }
             }
             pill.frame = NSRect(x: 8, y: CraMetrics.titleAreaHeight + 2, width: w - 16, height: pill.height)
@@ -758,6 +799,13 @@ final class SidebarTopBarView: NSView {
         }
     }
 
+    /// The ••• menu's colours: Arc's ArcMenu, dark in Dark mode and the space's light palette in Light (#287, #822).
+    func moreMenuColors() -> SidebarCreationMenuColors {
+        let dark = SystemAppearance.shared.isDark
+        let theme = store.focusedSpace(window: ui.windowID).theme
+        return SidebarCreationMenuColors(SidebarMoreMenu.tones(theme: dark ? theme : theme.shown, dark: dark))
+    }
+
     /// The narrow header's ••• (Arc 1.17x, #287): Reload and Toggle Sidebar with their shortcuts,
     /// in a popover under the button, which shows ✕ while it's open.
     private func toggleMorePanel() {
@@ -768,7 +816,7 @@ final class SidebarTopBarView: NSView {
         let panel = SidebarMorePanel(items: [
             .init(symbol: "arrow.clockwise", title: "Reload", keys: keys("reload"), enabled: hasTab) { [weak self] in self?.actions.reload() },
             .init(symbol: store.settings.sidebarSide.toggleSymbol, title: "Toggle Sidebar", keys: keys("toggleSidebar"), enabled: true) { [weak self] in self?.actions.toggleSidebar() },
-        ], ink: store.focusedSpace(window: ui.windowID).theme.shadedDark)
+        ], colors: moreMenuColors())
         panel.onClose = { [weak self] in
             self?.morePanel = nil
             self?.apply()
@@ -838,7 +886,7 @@ enum ReloadMenu {
     static func make(_ actions: SidebarActions) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        for group in [["reload", "hardReload"], ["clearCookies", "clearCache"], ["viewSource", "devTools"]] {
+        for group in [["reload", "hardReload"], ["clearCookies", "clearCache", "clearSiteData"], ["viewSource", "devTools"]] {
             if m.numberOfItems > 0 { m.addItem(.separator()) }
             for id in group { MenuItems.add(m, action: id, on: id == "reload" ? true : nil) { actions.performAction(id) } }
         }
@@ -849,6 +897,8 @@ enum ReloadMenu {
 /// The URL pill on the sidebar's second row while the toolbar is hidden.
 final class SidebarURLPill: NSView, NSTextFieldDelegate {
     var actions: SidebarActions?
+    /// The Chromium profile folder its pinned extensions are listed for, for their menus' Unpin (#695).
+    var pinsProfile = "Default"
     var showAccessories = false { didSet { if showAccessories != oldValue { refreshAccessories(animated: true) } } }
     private let label = NSTextField.sidebarLabel(size: 13)
     private let tip: ArcTooltipAnchorView
@@ -862,7 +912,7 @@ final class SidebarURLPill: NSView, NSTextFieldDelegate {
     /// The address the field stands for (its tip), for scenarios.
     var shownURL: String { url }
     private var tabID: UUID?
-    /// Settings ▸ Tabs "Edit the address in the sidebar" (#344): a click edits in place.
+    /// Settings ▸ Tabs "Edit the address in place" (#344): a click edits in place.
     private var editInPlace = false
     /// The address field while it is edited in place (#344), and the tab it edits.
     private var field: NSTextField?
@@ -963,7 +1013,12 @@ final class SidebarURLPill: NSView, NSTextFieldDelegate {
                 b.configure(symbol: nil, image: icons[id] ?? nil, help: protectedMedia.map(ExtensionStore.offOnProtectedMedia) ?? "",
                             enabled: protectedMedia == nil, width: 28, iconSize: 16, tint: colors.textSecondary)
                 b.action = { actions.runExtension(id) }
-                b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
+                // Arc's menu for the pinned extension (#695).
+                b.menuProvider = { [weak self] in
+                    ExtensionStore.shared.entries.first { $0.extensionID == id }.map {
+                        ExtensionsMenu.actionMenu(for: $0, profile: self?.pinsProfile ?? "Default", open: { actions.openURL($0) })
+                    }
+                }
                 accessories.append(b)
             case .copyURL:
                 let copy = SidebarGlyphButton(symbol: "link", size: 28, height: 28, iconSize: 14, weight: .regular, help: "Copy URL (⇧⌘C)", colors: colors) {}
@@ -1244,6 +1299,22 @@ final class SpaceDockView: NSView {
         super.viewWillMove(toWindow: newWindow)
     }
 
+    /// The + menu's colours: Arc's menu takes the space's palette for the Mac's appearance, dark in Dark mode and light
+    /// in Light (#822).
+    private func creationMenuColors() -> SidebarCreationMenuColors {
+        SidebarCreationMenuColors(ArcMenuTones(theme: store.focusedSpace(window: ui.windowID).theme.shown, dark: SystemAppearance.shared.isDark))
+    }
+
+    /// For scenarios (#822): the colours the + menu opens with, as sRGB hex.
+    func debugCreationMenuColors() -> String {
+        func hex(_ c: NSColor) -> String {
+            let s = c.usingColorSpace(.sRGB) ?? c
+            return String(format: "#%02X%02X%02X", Int(s.redComponent * 255 + 0.5), Int(s.greenComponent * 255 + 0.5), Int(s.blueComponent * 255 + 0.5))
+        }
+        let c = creationMenuColors()
+        return "fill=\(hex(c.fill)) ink=\(hex(c.ink)) disabled=\(hex(c.disabled)) dark=\(SystemAppearance.shared.isDark ? 1 : 0)"
+    }
+
     private func toggleCreationMenu() {
         guard !store.isBlank(window: ui.windowID) else { return }
         ArcTooltipController.shared.dismiss()
@@ -1263,11 +1334,7 @@ final class SpaceDockView: NSView {
             SidebarCreationMenuItem(title: title, symbol: symbol, shortcut: KeyBindingRegistry.shared.action(id)?.primary?.display ?? "",
                                     enabled: enabled) { [actions] in actions.performAction(id) }
         }
-        let tones = ArcMenuTones(theme: store.focusedSpace(window: ui.windowID).theme.shown)
-        func ink(_ c: RGB) -> NSColor { NSColor(srgbRed: c.r, green: c.g, blue: c.b, alpha: 1) }
-        let colors = SidebarCreationMenuColors(fill: ink(tones.fill), hover: ink(tones.hover), separator: ink(tones.separator),
-                                               shortcut: ink(tones.shortcut), disabled: ink(tones.disabled))
-        creationMenu.toggle(from: plus, items: items, colors: colors) { [weak plus] open in
+        creationMenu.toggle(from: plus, items: items, colors: creationMenuColors()) { [weak plus] open in
             plus?.highlighted = open
             plus?.setMenuOpen(open)
         }
@@ -1756,7 +1823,7 @@ final class SpaceCellView: NSView, ArcTooltipTarget {
         guard let i = store.spaceOrder.firstIndex(of: spaceID), i < 9 else { return [] }
         return KeyBindingRegistry.shared.action("space\(i + 1)")?.primary?.caps ?? []
     }
-    var badge: String? { store.profile(store.space(spaceID)?.profileID)?.name ?? "Default" }
+    var badge: String? { store.profileName(store.space(spaceID)?.profileID) }
     // Arc 1.171: ~0.62 s after the pointer stops (two 120 Hz recordings, 3 Nov 2026), sooner
     // than a control's tip. Cra's panel takes ~0.07 s more to reach the screen.
     var idleDelay: TimeInterval { 0.55 }
@@ -1934,5 +2001,15 @@ final class LibraryButtonView: NSView {
         } else if bounds.contains(p) {
             actions.toggleLibrary()
         }
+    }
+}
+
+/// An ArcMenu's colours from CraCore's tones (the + menu, the ••• menu, Back and Forward's history; #822).
+extension SidebarCreationMenuColors {
+    init(_ tones: ArcMenuTones) {
+        func color(_ c: RGB) -> NSColor { NSColor(srgbRed: c.r, green: c.g, blue: c.b, alpha: 1) }
+        self.init(fill: color(tones.fill), hover: color(tones.hover), separator: color(tones.separator),
+                  shortcut: color(tones.shortcut), disabled: color(tones.disabled), ink: color(tones.ink),
+                  isDark: tones.ink == RGB(1, 1, 1))
     }
 }

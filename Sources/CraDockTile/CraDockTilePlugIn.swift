@@ -37,7 +37,8 @@ final class CraDockTilePlugIn: NSObject, NSDockTilePlugIn {
         tile.display()
     }
 
-    /// The keys AppIconManager writes; nil for the bundled icon.
+    /// The keys AppIconManager writes; nil for Segments, the bundle's own, which the Dock draws in the system's icon
+    /// style (Dark, Clear, Tinted) as it does every app's (GitHub #739, AppIconBundle.dockImage).
     private func selectedImage() -> NSImage? {
         guard let app, let id = app.bundleIdentifier as CFString? else { return nil }
         CFPreferencesAppSynchronize(id)

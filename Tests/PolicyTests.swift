@@ -22,6 +22,7 @@ enum PolicyTests {
         liveScheduler()
         try webHandoff()
         try defaultBrowserPicker()
+        try openWithPDF()
         try iPhoneDefaultBrowser()
         try iPhoneWebContentLoadsHTTP()
         print("Policies: \(checks) checks passed")
@@ -74,6 +75,18 @@ enum PolicyTests {
             .flatMap { $0["LSItemContentTypes"] as? [String] ?? [] }
         expect(types.contains("public.html"), "Cra views HTML files")
         expect(types.contains("public.xhtml"), "Cra views XHTML files, so the system's default browser picker lists it")
+    }
+
+    /// Finder's Open With lists Cra for a PDF, which opens in Chrome's PDF viewer, as a link from
+    /// another app does. Cra is only an Alternate for it: Preview stays the PDF app a double-click opens.
+    private static func openWithPDF() throws {
+        let plist = try Data(contentsOf: URL(fileURLWithPath: "resources/Info.plist"))
+        let info = try PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any]
+        let pdf = (info?["CFBundleDocumentTypes"] as? [[String: Any]] ?? [])
+            .filter { ($0["LSItemContentTypes"] as? [String] ?? []).contains("com.adobe.pdf") }
+        expect(pdf.count == 1, "Cra declares PDF documents once, so Open With lists it")
+        expect(pdf.first?["CFBundleTypeRole"] as? String == "Viewer", "Cra only views PDFs")
+        expect(pdf.first?["LSHandlerRank"] as? String == "Alternate", "Cra never takes over PDFs from Preview")
     }
 
     // promise: #504 #536
@@ -222,7 +235,11 @@ enum PolicyTests {
         expect(FeatureFlags(parsing: "x=1&backdrop=material&y").backdrop == .material, "other keys around it are ignored")
         expect(FeatureFlags(parsing: "backdrop=glass").backdrop == .layer && FeatureFlags(parsing: "backdrop").backdrop == .layer,
                "an unknown value or a bare key keeps the default")
-        expect(FeatureFlags(parsing: "backdrop=material").summary == "backdrop=material", "the log line names the path")
+        expect(FeatureFlags(parsing: "backdrop=material").summary == "backdrop=material sidebarSlide=live", "the log line names the paths")
+        // #613: ⌘S resizes the page as the sidebar slides, as Arc does; frozen keeps #317's page sized up front.
+        expect(FeatureFlags(parsing: "").sidebarSlide == .live, "the sidebar's slide resizes the page live by default (Arc's)")
+        expect(FeatureFlags(parsing: "sidebarSlide=frozen&backdrop=material").sidebarSlide == .frozen, "CRA_FLAGS picks the frozen slide")
+        expect(FeatureFlags(parsing: "sidebarSlide=fast").sidebarSlide == .live, "an unknown slide keeps the default")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

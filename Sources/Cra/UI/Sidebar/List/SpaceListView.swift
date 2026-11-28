@@ -108,6 +108,8 @@ final class SpaceListView: NSView, NSDraggingSource {
     private var highlightPinned = false
     private var highlightToday = false
     private var dropLineSpec: SidebarListDrop.Line?
+    /// The place the drag was last offered, for its tick (#883).
+    var reorderHaptics = SidebarReorderHaptics<SidebarListDrop.Target>()
     private let topHairline = NSView()
     private let bottomHairline = NSView()
     private var hairlineState = (top: false, bottom: false)
@@ -201,8 +203,9 @@ final class SpaceListView: NSView, NSDraggingSource {
         dropLine.zPosition = 5
         dropLine.opacity = 0
         document.layer?.addSublayer(dropLine)
-        // A link from a page or another app opens as a tab where it is let go (#419).
-        document.registerForDraggedTypes([.craSidebarItem, .URL, .string])
+        // A link from a page or another app opens as a tab where it is let go (#419), and so does a
+        // file Chromium shows (an image, a PDF) dragged out of the downloads tray or the Finder.
+        document.registerForDraggedTypes([.craSidebarItem, .URL, .string, .fileURL])
         autoscroller.anchor = document
         edgePager.anchor = self
         edgePager.onPage = { [weak self] in self?.pageSpace($0) }
@@ -313,6 +316,7 @@ final class SpaceListView: NSView, NSDraggingSource {
         let audible = ui.audibleTabIDs
         let refreshing = LiveFolderManager.shared.refreshing
         let tidyEffects = TidyTitlesService.shared.effects
+        let incognito = store.isIncognito(space: spaceID)
         // What the models read, read here so a change still rebuilds the list: the models themselves are built
         // only for rows that get a view, outside this observation (#618).
         _ = favicons.images
@@ -418,7 +422,15 @@ final class SpaceListView: NSView, NSDraggingSource {
                 // An easel's row has an easel glyph, not a favicon (Arc's EaselCellView).
                 let (img, flip) = Easel.id(fromURL: tab.url) != nil && tab.customIconKey == nil
                     ? (NSImage(systemSymbolName: "pencil.and.scribble", accessibilityDescription: "Easel"), false) : icon(tab.iconKey)
-                let (homeImg, homeFlip) = navigatedAway ? icon(tab.customIconKey ?? FaviconKey.key(for: tab.savedURL)) : (img, flip)
+                if !self.favicons.hasOwnImage(forKey: tab.iconKey) {
+                    // A tab that never loaded here, or shows only its host's icon (#909): its site's icon, the rows on screen before those near it
+                    // and those of spaces paged out of view.
+                    let visible = self.placed(row).intersects(self.scrollView.contentView.bounds)
+                        && store.showsSpace(self.spaceID, in: self, window: window)
+                    SiteIconLoader.shared.want(.init(url: tab.url, iconKey: tab.iconKey, visible: visible, incognito: incognito),
+                                               into: self.favicons)
+                }
+                let (homeImg, homeFlip) = navigatedAway ? icon(tab.customIconKey ?? FaviconKey.sectionKey(for: tab.savedURL)) : (img, flip)
                 let developerMode = store.settings.isDeveloperMode(url: tab.url)
                 // Tidy Tab Titles' rename: "Double-click to rename" under the new name for a few seconds.
                 let tidyRename = tidyEffects[item.id]
@@ -884,9 +896,70 @@ final class SpaceListView: NSView, NSDraggingSource {
         if jumpPill.frame != frame { jumpPill.frame = frame }
     }
 
+    static func jumpToFolder(_ id: UUID, for ui: SidebarUIState, space: UUID) {
+        for list in all.allObjects where list.ui === ui && list.spaceID == space {
+            if let row = list.rows.first(where: { $0.key == .item(id) }) { list.scrollTo(row) }
+        }
+    }
+
     /// Testing: the jump pill's click on the focused space's list.
     static func jumpToSelected(for ui: SidebarUIState, space: UUID) {
         for l in all.allObjects where l.ui === ui && l.spaceID == space { l.scrollToSelected() }
+    }
+
+    /// Scenarios (cra://debug?rowPoint=<id>, #743): where a real pointer goes to rest on the middle of the
+    /// shown list's row for `itemID`, in top-left screen points, for scripts/scenario.sh's `click row <id> move`.
+    /// Scenarios (cra://debug?clickRow=<id>): the middle of the row for that item in its window, AppKit's
+    /// coordinates, for a click through the event queue; nil when the row isn't shown.
+    static func debugRowWindowPoint(_ itemID: UUID, ui: SidebarUIState) -> (NSPoint, NSWindow)? {
+        for l in all.allObjects where l.ui === ui {
+            guard let row = l.views[.item(itemID)], let w = row.window, w.isVisible, !row.isHiddenOrHasHiddenAncestor else { continue }
+            return (row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: nil), w)
+        }
+        return nil
+    }
+
+    static func debugRowPoint(_ itemID: UUID, ui: SidebarUIState) -> NSPoint? {
+        for l in all.allObjects where l.ui === ui {
+            guard let row = l.views[.item(itemID)], let w = row.window, w.isVisible, !row.isHiddenOrHasHiddenAncestor,
+                  let top = NSScreen.screens.first?.frame.maxY else { continue }
+            let p = w.convertPoint(toScreen: row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: nil))
+            return NSPoint(x: p.x, y: top - p.y)
+        }
+        return nil
+    }
+
+    /// Scenarios (cra://debug?reorder=<label>&drag=<id>&path=<row id>:<f>,…, #883): `itemID` dragged over
+    /// each row in turn, `f` of the way down it, offered the place there as `dragUpdated` does. Returns the
+    /// ticks that played and each place ("none" over its own place), or nil when the row isn't shown.
+    static func debugReorder(_ itemID: UUID, path: [(row: UUID, f: CGFloat)], ui: SidebarUIState) -> (ticks: Int, places: [String])? {
+        for l in all.allObjects where l.ui === ui {
+            guard let dragged = l.views[.item(itemID)], dragged.window != nil, !dragged.isHiddenOrHasHiddenAncestor else { continue }
+            let before = SidebarReorderTick.count
+            ui.draggingID = itemID
+            l.reorderHaptics = .init()
+            var places: [String] = []
+            for step in path {
+                guard let row = l.views[.item(step.row)] else { places.append("no row"); continue }
+                let y = row.isFlipped ? row.bounds.height * step.f : row.bounds.height * (1 - step.f)
+                let drop = l.resolve(dragged: itemID, at: l.document.convert(NSPoint(x: row.bounds.midX, y: y), from: row))
+                l.offer(drop)
+                places.append(drop.target.map(debugPlace) ?? "none")
+            }
+            ui.listDrop = nil
+            ui.draggingID = nil
+            l.reorderHaptics = .init()
+            return (SidebarReorderTick.count - before, places)
+        }
+        return nil
+    }
+
+    private static func debugPlace(_ t: SidebarListDrop.Target) -> String {
+        switch t {
+        case .insert(_, let index): "insert \(index)"
+        case .split: "split"
+        case .into: "into"
+        }
     }
 
     /// Tests without the pointer (cra://debug?folderPreview=<id>): the folder's preview as if hovered.
@@ -937,6 +1010,10 @@ final class SpaceListView: NSView, NSDraggingSource {
     /// Scrolls the selected tab to the middle of the list (as far as the list allows).
     private func scrollToSelected() {
         guard let (row, _) = selectedRow() else { return }
+        scrollTo(row)
+    }
+
+    private func scrollTo(_ row: Row) {
         let clip = scrollView.contentView
         let visible = clip.bounds
         let f = placed(row)
@@ -1052,8 +1129,10 @@ final class SpaceListView: NSView, NSDraggingSource {
     private func hoverAt(_ windowPoint: NSPoint?) {
         var target: SidebarRowView?
         var local = NSPoint.zero
-        // A swipe slides the strip under the pointer: no hover until it settles.
-        if let wp = windowPoint, ui.spaceSwipe == 0, ui.libraryPage == nil {
+        // A swipe slides the strip under the pointer: no hover until it settles. Nor under a list hung over the
+        // tabs (Library's downloads): its rows, not the tabs under them, are what the pointer is on (#770).
+        if let wp = windowPoint, ui.spaceSwipe == 0, ui.libraryPage == nil,
+           let window, isUncovered(atScreenPoint: window.convertPoint(toScreen: wp)) {
             let p = document.convert(wp, from: nil)
             if document.shownRect.contains(p), let row = rows.first(where: { placed($0).contains(p) }), let v = views[row.key] {
                 target = v
@@ -1087,8 +1166,11 @@ final class SpaceListView: NSView, NSDraggingSource {
             previewRow = nil
         }
         guard let tab = row as? TabRowView, tab !== previewRow, let m = tab.model, m.pinned, !m.selected, !m.editing,
-              ui.draggingID == nil, NSEvent.pressedMouseButtons == 0, let url = store.item(m.id)?.tab?.url,
-              SidebarTabPreview.kind(for: url, settings: store.settings) != nil else { return }
+              ui.draggingID == nil, NSEvent.pressedMouseButtons == 0, let tabURL = store.item(m.id)?.tab?.url else { return }
+        let item = LiveFolderManager.shared.pullRequestItem(for: m.id)
+        let url = item?.url ?? tabURL
+        guard let kind = SidebarTabPreview.kind(for: url, settings: store.settings),
+              kind != .pullRequest || item != nil else { return }
         previewRow = tab
         let id = m.id
         FavoritePreviewCard.shared.hover(tab, target: .sidebarTab(
@@ -1113,13 +1195,23 @@ final class SpaceListView: NSView, NSDraggingSource {
     }
 
     func clickTab(_ id: UUID, event: NSEvent) {
-        let flags = event.modifierFlags.intersection([.command, .shift])
-        if !flags.isEmpty {
-            ui.pick(id, range: flags.contains(.shift), in: store)
-        } else if event.clickCount == 2 {
+        let flags = event.modifierFlags
+        let open = store.selectedTabID(window: ui.windowID)
+        // What the tab menu's Open in Split View needs (SidebarMenus.tab): a tab with a page open in this space.
+        let canSplit = open.map { store.item($0)?.isEmptyTab == false && store.spaceID(ofItem: id) == store.focusedSpaceID(window: ui.windowID) } ?? false
+        switch SidebarRowPress.tabClick(command: flags.contains(.command), shift: flags.contains(.shift), option: flags.contains(.option),
+                                        clickCount: event.clickCount, isOpen: id == open, canSplit: canSplit) {
+        case .pick(let range):
+            ui.pick(id, range: range, in: store)
+        case .rename:
             CraLog.note("sidebar double-click: rename")
             ui.renamingID = id
-        } else {
+        case .openInSplit:
+            CraLog.note("sidebar option-click: open in split view")
+            ui.clearPicks(anchor: id)
+            if ui.keyboardFocusID != nil { ui.keyboardFocusID = nil }
+            actions.performAction("openInSplit:\(id.uuidString)")
+        case .select:
             ui.clearPicks(anchor: id)
             if ui.keyboardFocusID != nil { ui.keyboardFocusID = nil }
             store.selectTab(id, window: ui.windowID)
@@ -1146,6 +1238,7 @@ final class SpaceListView: NSView, NSDraggingSource {
     func beginDrag(_ id: UUID, from row: SidebarRowView, event: NSEvent) {
         hoverAt(nil)
         ui.draggingID = id
+        reorderHaptics = .init()
         let pb = NSPasteboardItem()
         if let data = try? JSONEncoder().encode(SidebarDragItem(id: id)) { pb.setData(data, forType: .craSidebarItem) }
         let item = NSDraggingItem(pasteboardWriter: pb)
@@ -1240,7 +1333,8 @@ final class SpaceListView: NSView, NSDraggingSource {
     static func link(on pb: NSPasteboard) -> SidebarLinkDrop.Tab? {
         guard pb.availableType(from: [.craSidebarItem]) == nil else { return nil }
         return SidebarLinkDrop.tab(from: (pb.pasteboardItems ?? []).map {
-            SidebarLinkDrop.Item(url: $0.string(forType: .URL), name: $0.string(forType: .urlName), text: $0.string(forType: .string))
+            SidebarLinkDrop.Item(url: $0.string(forType: .URL), name: $0.string(forType: .urlName), text: $0.string(forType: .string),
+                                 file: $0.string(forType: .fileURL))
         })
     }
 
@@ -1279,24 +1373,26 @@ final class SpaceListView: NSView, NSDraggingSource {
             ui.draggingID = d.id
         }
         autoscroller.update()
+        if entered { reorderHaptics = .init() }
         guard let id = ui.draggingID, store.item(id) != nil else { return [] }
         let drop = resolve(dragged: id, at: document.convert(info.draggingLocation, from: nil))
-        if drop != ui.listDrop {
-            ui.listDrop = drop
-            // A tick when a row starts offering to combine, so the change of meaning is felt as well as seen.
-            switch drop.target {
-            case .split?:
-                if store.settings.hapticFeedbackOnReorder { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now) }
-            default: break
-            }
-            // A closed folder stays closed under a drag: Arc 1.172 only highlights its row, however
-            // long the tab hovers (2.5 s, offline copy, 9 Nov 2026, #266).
-        }
+        offer(drop)
+        // A closed folder stays closed under a drag: Arc 1.172 only highlights its row, however
+        // long the tab hovers (2.5 s, offline copy, 9 Nov 2026, #266).
         return info.draggingSourceOperationMask.contains(.move) ? .move : .copy
+    }
+
+    /// The dragged row is offered `drop`: a tick each time that's a new place, for a tab, a folder
+    /// or a split alike, as in Arc (#883: only a tab offering to combine into a split ticked).
+    func offer(_ drop: SidebarListDrop) {
+        guard drop != ui.listDrop else { return }
+        ui.listDrop = drop
+        if reorderHaptics.offer(drop.target), store.settings.hapticFeedbackOnReorder { SidebarReorderTick.play() }
     }
 
     func dragExited() {
         autoscroller.stop()
+        _ = reorderHaptics.offer(nil)
         if ui.listDrop != nil { ui.listDrop = nil }
     }
 
@@ -1310,6 +1406,7 @@ final class SpaceListView: NSView, NSDraggingSource {
         let point = document.convert(info.draggingLocation, from: nil)
         let drop = ui.listDrop ?? resolve(dragged: id, at: point)
         ui.listDrop = nil
+        reorderHaptics = .init()
         applyDrop(drop)
         // From another window's space (a Blank Window's, or across windows and spaces): the tab
         // leaves the window that showed it and opens here; this window comes forward, so its page
@@ -1622,4 +1719,23 @@ final class SpaceListDocument: NSView {
     override func draggingExited(_ sender: NSDraggingInfo?) { list?.dragExited() }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { list?.performDrop(sender) ?? false }
     override func draggingEnded(_ sender: NSDraggingInfo) { list?.dragExited() }
+}
+
+extension SidebarStore {
+    /// Whether `view`, a sidebar view of `space`, is where the user can see it: in a window that shows that
+    /// space, not a page the pager keeps to one side. Rows on screen ask for site icons first.
+    func showsSpace(_ space: UUID, in view: NSView, window: UUID?) -> Bool {
+        view.window != nil && focusedSpaceID(window: window) == space
+    }
+}
+
+/// The sidebar's reorder tick: a generic haptic, now (#883). It counts for scenarios, as `SpaceStyleTick` does.
+@MainActor
+enum SidebarReorderTick {
+    static var count = 0
+
+    static func play() {
+        count += 1
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+    }
 }

@@ -9,6 +9,10 @@ Everything is scripted; the only manual part is obtaining the certificate once.
 ## One-time setup
 
 1. **Apple Developer Program** membership for the account that will sign.
+1. **Xcode 27**, on the Mac that builds a release and on the runners (`runs-on: xcode-27`). Cra's icon
+   (`resources/AppIcon.icon`, Gilad's Icon Composer icon) uses macOS 27 features only Xcode 27's actool and
+   ictool read; `scripts/compile-app-icon.sh` stops a release (`CRA_RELEASE=1`) on an older Xcode. Day-to-day
+   builds on Xcode 26 still work, with the icon flattened and a warning.
 2. **Developer ID Application certificate.** In Xcode → Settings → Accounts → Manage
    Certificates, add "Developer ID Application". Export it from Keychain Access as a
    `.p12` with a password. Note the identity string, for example
@@ -76,13 +80,16 @@ clip hook checks the website push, not the tag (see "Clips in the release notes"
 
 ### Notarization
 
-Each CPU is notarized once: `release.sh` packages the signed app into its DMG and
-`scripts/notarize.sh` submits the DMG, whose ticket covers the app inside, then staples the DMG
-and the app and zips the stapled app. Apple usually answers in minutes; on 17 Nov 2026 it took
-52, so the wait is 2 hours.
+Each CPU is notarized twice (`scripts/notarize-dist.sh`): `release.sh` packages the signed app into its DMG,
+`scripts/notarize.sh` submits that DMG, whose ticket covers the app inside, and staples the app; then `package.sh`
+packs the DMG again with the stapled app, and that DMG is submitted and stapled in turn. So the app inside the
+DMG carries its own ticket and opens offline on its first launch (GitHub #720: until 0.1.54 only the DMG and the
+update zip had one). `release.sh` stops unless the DMG and the app in it are both stapled, then zips the stapled
+app. Apple usually answers in minutes; on 17 Nov 2026 it took 52, so each wait is up to 2 hours.
 
 A run that stops while Apple is still checking keeps its work. `notarize.sh` writes the
-submission id next to the DMG (`Cra.dmg.submission`) as soon as Apple has it; when a build job
+submission id next to the DMG (`Cra.dmg.submission`) as soon as Apple has it (a stapled app in the kept files means
+it is the second DMG's); when a build job
 fails or is cancelled, the workflow uploads the signed app, the DMG and the id
 (`scripts/keep-pending.sh`, artifact `pending-<version>-<arch>`). Rerun the failed job
 (`gh run rerun <id> --failed`): it downloads them and only waits for that submission, then
@@ -168,9 +175,10 @@ scripts/release.sh
 ```
 
 `scripts/release.sh` does this once per CPU (`CRA_ARCHS`, default `arm64 x86_64`): it runs
-`build.sh` (sign, innermost first, with the helper entitlements), notarizes and staples the
-app, runs `package.sh` (zip, DMG with an Applications link, checksums), then notarizes and
-staples the DMG, checks it with `spctl` and writes that CPU's appcast. Both CPUs share one
+`build.sh` (sign, innermost first, with the helper entitlements), runs `package.sh` (zip, DMG with an
+Applications link, checksums), notarizes the DMG and staples the app, packs the DMG again with the stapled
+app and notarizes and staples that (`notarize-dist.sh`), checks both tickets and `spctl` and writes that CPU's
+appcast. Both CPUs share one
 build number. Without `CRA_SIGN_IDENTITY` it produces an ad-hoc build and skips notarization.
 
 `CRA_ARCH=x86_64 scripts/build.sh` builds the other CPU on its own: the host CPU keeps
@@ -375,10 +383,13 @@ ungoogled-chromium's and the branding in the tree. Publish both CPUs into one pr
 `scripts/fetch-engine.sh` pins `ENGINE_VERSION` and `ENGINE_RELEASE`; bump the `-<n>` suffix to publish a changed
 build of the same Chrome version.
 
-**A release ships the newest engine.** Pushing a `vX.Y.Z` tag from Claude Code runs
-`scripts/check-cef-release-hook.sh` (the CEF-era name), which stops the push when Chrome's newest stable for macOS
-(Google's version history) is newer than `ENGINE_VERSION`, or when the pinned release lacks the arm64 or the
-Intel archive; `release.sh` checks again (`scripts/check-engine-update.sh --check`). `CRA_ALLOW_OLD_ENGINE=1`
+**A release ships an engine with every Chrome security fix.** Pushing a `vX.Y.Z` tag from Claude Code runs
+`scripts/check-cef-release-hook.sh` (the CEF-era name), which stops the push when `ENGINE_VERSION` lacks a security
+fix Chrome stable has shipped or the stable Mac build Google serves is newer, or when the pinned release lacks the
+arm64 or the Intel archive. The check reads each CVE in the Chrome Releases posts and looks for its bug in
+Chromium's commits, so an engine on a newer Beta branch is checked too (on 159.0.8154.13 Beta, the old number
+check missed 158's critical CVE-2026-134401). `.github/workflows/engine-updates.yml` runs it hourly and opens an
+issue naming the CVEs and the build to move to; `release.sh` checks again (`scripts/check-engine-update.sh --check`). `CRA_ALLOW_OLD_ENGINE=1`
 ships the pinned engine anyway, for an urgent fix while the new one builds; in CI that's the repository variable
 `CRA_ALLOW_OLD_ENGINE` = `1`, deleted after the release.
 

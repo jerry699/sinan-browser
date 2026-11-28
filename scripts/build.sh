@@ -115,6 +115,9 @@ if [ "$EXE" = CraEngine ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier dk.kildahl.cra.engine" "$APP/Contents/Info.plist"
 fi
 echo -n "APPL????" > "$APP/Contents/PkgInfo"
+# 司南（fork）的图标走自己的 .icns（印章图），不用上游的 Icon Composer 管线：
+# 上游从 resources/AppIcon.icon 经 compile-app-icon.sh（需 Xcode 26 的 ictool）产出
+# Assets.car + AppIcon.icns；fork 的 AppIcon.icon 是 Cra 的图，编出来会顶掉司南的印章。
 [ -f resources/AppIcon.icns ] && cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # The AppleScript dictionary (Arc's, same terms and codes: Info.plist OSAScriptingDefinition).
 cp resources/Cra.sdef "$APP/Contents/Resources/Cra.sdef"
@@ -187,6 +190,15 @@ for exe in "$APP/Contents/MacOS/$EXE" "$APP/Contents/MacOS/CraPluginHost" "$APP/
   lipo "$exe" -verify_arch "$ARCH" || { echo "$exe has no $ARCH code: $(lipo -archs "$exe")" >&2; exit 1; }
 done
 
+# SwiftPM links Cra's own binaries with an rpath into the toolchain that built them
+# (/Applications/Xcode….app/…/usr/lib/swift-6.2/macosx, for back-deployed Swift libraries Cra doesn't load).
+# Sparkle loads through @rpath, so that path comes first: syspolicy_check calls it a fatal "Bad Load Command" and
+# macOS's malware check could fail on a Mac without that Xcode (GitHub #720, 0.1.54 for Intel). It goes before
+# signing; nothing in the bundle may point outside it and the system after that.
+scripts/check-load-paths.sh --strip "$APP/Contents/MacOS/$EXE" "$APP/Contents/MacOS/CraPluginHost" \
+  "$APP"/Contents/Frameworks/*.app/Contents/MacOS/* "$DOCK_TILE/Contents/MacOS/CraDockTile"
+scripts/check-load-paths.sh "$APP"
+
 # Helpers link the framework at launch (Sources/CraHelper/main.cc says why: ~12 MB less in each
 # page, GPU and utility process). The path has to resolve inside the bundle or no page starts.
 if [ "$ENGINE" = cef ]; then
@@ -198,9 +210,11 @@ fi
 
 # Every app in the bundle shows Cra's icon. macOS takes a bundle's icon from its asset catalog (CFBundleIconName)
 # before its .icns, and Chrome's alerts helpers carry Chromium's: the "Cra" notification prompt and every page's
-# notification showed Chromium's icon (0.1.44, a user's screenshot).
+# notification showed Chromium's icon (0.1.44, a user's screenshot). Cra.app's own catalog is Cra's icon (#739).
+# 司南（fork）：图标是 .icns，没有 asset catalog —— 上游那条 Assets.car 校验不适用。
 for plist in $(find "$APP" -path '*.app/Contents/Info.plist' | tr ' ' '\001'); do
   plist="$(tr '\001' ' ' <<<"$plist")"
+  [ "$plist" = "$APP/Contents/Info.plist" ] && continue
   if /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$plist" >/dev/null 2>&1 ||
      [ -e "$(dirname "$plist")/Resources/Assets.car" ]; then
     echo "An app in the bundle takes its icon from an asset catalog, not Cra's .icns: ${plist#"$APP"/}" >&2

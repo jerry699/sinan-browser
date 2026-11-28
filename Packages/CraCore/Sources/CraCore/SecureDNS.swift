@@ -54,8 +54,7 @@ extension SecureDNS {
         default:
             if servers.isEmpty {
                 // zh: “自动”使用网络自身的解析器，在其支持时加密。仅办公网络内部可知的名称仍能正常解析。
-                return "「自动」使用网络自身的解析器，在其支持时加密。仅办公网络内部可知的名称仍能正常解析。"
-            }
+                return "「自动」使用网络自身的解析器，在其支持时加密。仅办公网络内部可知的名称仍能正常解析。"            }
             // zh: \(to) 可响应时，主机名通过与它的加密连接查询，否则由网络自身的解析器查询。
             return "\(to) 可响应时，主机名通过与它的加密连接查询，否则由网络自身的解析器查询。"
         }
@@ -74,9 +73,10 @@ public struct SecureDNSProvider: Hashable, Sendable, Identifiable {
     /// than Chrome's "DNS4EU Public Service (Protective)", which set the menu's width). NextDNS
     /// needs the user's own profile id in the path, so it goes through Custom.
     public static let all: [SecureDNSProvider] = [
-        SecureDNSProvider(name: "Google (Public DNS)", template: "https://dns.google/dns-query{?dns}"),
-        SecureDNSProvider(name: "Cloudflare (1.1.1.1)", template: "https://chrome.cloudflare-dns.com/dns-query"),
-        SecureDNSProvider(name: "Quad9 (9.9.9.9)", template: "https://dns.quad9.net/dns-query"),
+        SecureDNSProvider(name: "Google Public DNS", template: "https://dns.google/dns-query{?dns}"),
+        SecureDNSProvider(name: "Cloudflare", template: "https://chrome.cloudflare-dns.com/dns-query"),
+        SecureDNSProvider(name: "Cloudflare (Malware Filter)", template: "https://security.cloudflare-dns.com/dns-query"),
+        SecureDNSProvider(name: "Quad9 (Threat Blocking)", template: "https://dns.quad9.net/dns-query"),
         SecureDNSProvider(name: "OpenDNS", template: "https://doh.opendns.com/dns-query{?dns}"),
         SecureDNSProvider(name: "CleanBrowsing (Family Filter)", template: "https://doh.cleanbrowsing.org/doh/family-filter{?dns}"),
         SecureDNSProvider(name: "DNS4EU (Protective)", template: "https://protective.joindns4.eu/dns-query{?dns}"),

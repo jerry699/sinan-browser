@@ -104,4 +104,32 @@ struct BackForwardMenuTests {
         let low = L.placement(button: CGRect(x: 600, y: 30, width: 32, height: 32), screen: screen, rows: 12)
         #expect(low.frame.minY + L.margin == 4, "a long menu near the bottom stays on the screen")
     }
+
+    /// ⌘-click on Back or Forward (#797): Arc opens the nearest page that way in a new tab, with its own
+    /// title (b.com has none, so none, not the menu's address), and nothing at the end of the history.
+    /// Only a ⌘-click does it; ⌘[ (a key, ⌘ held too) keeps going back in the tab.
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/797"))
+    func commandClickOpensTheNearestPageInANewTab() {
+        #expect(BackForwardMenu.newTabPage(history: Self.history, direction: .back) == .init(entryID: 12, title: "", url: "https://b.com/page"))
+        #expect(BackForwardMenu.newTabPage(history: Self.history, direction: .forward)?.url == "https://d.com/")
+        let first = Self.history.replacingOccurrences(of: "\"currentIndex\":2", with: "\"currentIndex\":0")
+        #expect(BackForwardMenu.newTabPage(history: first, direction: .back) == nil)
+        #expect(BackForwardMenu.newTabPage(history: "not json", direction: .back) == nil)
+        #expect(BackForwardMenu.opensNewTab(commandHeld: true, byMouse: true))
+        #expect(!BackForwardMenu.opensNewTab(commandHeld: true, byMouse: false), "⌘[ goes back in the tab")
+        #expect(!BackForwardMenu.opensNewTab(commandHeld: false, byMouse: true))
+    }
+
+    /// ⌘-click (or ⌘Return) on a row of the history menu: that page opens in a new tab, as ⌘-click on
+    /// the button opens the nearest one (#797), with the entry's own title; a plain pick goes there in the tab.
+    @Test func commandPickedRowOpensItsPageInANewTab() {
+        #expect(BackForwardMenu.pick(commandHeld: false) == .goThere)
+        #expect(BackForwardMenu.pick(commandHeld: true) == .newTab)
+        #expect(BackForwardMenu.newTabPage(history: Self.history, entryID: 11) == .init(entryID: 11, title: "A", url: "https://a.com/"),
+                "the farther page, not only the nearest")
+        #expect(BackForwardMenu.newTabPage(history: Self.history, entryID: 12)?.title == "", "its own title, not the row's address")
+        #expect(BackForwardMenu.newTabPage(history: Self.history, entryID: 14)?.title == "  D  ")
+        #expect(BackForwardMenu.newTabPage(history: Self.history, entryID: 99) == nil)
+        #expect(BackForwardMenu.newTabPage(history: "not json", entryID: 11) == nil)
+    }
 }

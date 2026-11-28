@@ -1,5 +1,21 @@
 import Foundation
 
+/// A sheet's resting heights, as UIKit's detents: half the screen, or all of it.
+public enum MobileSheetHeight {
+    case medium, large
+}
+
+/// How tall App Settings (the tab switcher's gear) and the App Icon picker from the
+/// Change App Icon quick action open.
+public enum MobileSettingsSheet {
+    /// On iPhone Arc Search's half sheet that drags up to full; on iPad the form sheet's full height only,
+    /// where half of it showed two rows and left the rest of the card empty (#674). `onPad` is any screen that opens
+    /// sheets full (MobileScreenClass.opensSheetsFull): the open iPhone Duo too, where half showed 4–6 rows (#866).
+    public static func appSettingsHeights(onPad: Bool) -> [MobileSheetHeight] {
+        onPad ? [.large] : [.medium, .large]
+    }
+}
+
 /// What Arc Search's Site Settings sheet switches: the three blockers, then how the page behaves.
 /// Each has a value for every site (Global Site Settings) that a single site can override.
 public struct MobileSiteOptions: Codable, Equatable {
@@ -138,6 +154,9 @@ public struct MobileSettings: Codable, Equatable {
     /// Default Site Settings ▸ Block Lists (#507, not in Arc Search): addresses of lists added on top
     /// of Cra's own, blocked where Block Ads is on (CustomBlocklist).
     public var customBlocklists: [String] = []
+    /// App Settings ▸ Apple Intelligence (#792, not in Arc Search): off hides Browse for Me and Summarize
+    /// (`MobileAIState.shown(userWantsThem:)`).
+    public var appleIntelligence = true
 
     public init() {}
 
@@ -159,7 +178,7 @@ public struct MobileSettings: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case searchEngine, archiveAfter, opensKeyboardOnLaunch, openAppLinksIn, siteDefaults, siteOverrides, hasSeenOnboarding, searchesWithBrowseForMe, answerLanguage, customSearchURL, searchesWithCustom, hasSearched, hasSeenBlockTip, hasDismissedSyncCard, hasSeenSharePrompt, customBlocklists
+        case searchEngine, archiveAfter, opensKeyboardOnLaunch, openAppLinksIn, siteDefaults, siteOverrides, hasSeenOnboarding, searchesWithBrowseForMe, answerLanguage, customSearchURL, searchesWithCustom, hasSearched, hasSeenBlockTip, hasDismissedSyncCard, hasSeenSharePrompt, customBlocklists, appleIntelligence
     }
 
     public init(from decoder: Decoder) throws {
@@ -179,6 +198,7 @@ public struct MobileSettings: Codable, Equatable {
         hasDismissedSyncCard = (try? c.decodeIfPresent(Bool.self, forKey: .hasDismissedSyncCard)) ?? false
         hasSeenSharePrompt = (try? c.decodeIfPresent(Bool.self, forKey: .hasSeenSharePrompt)) ?? false
         customBlocklists = (try? c.decodeIfPresent([String].self, forKey: .customBlocklists)) ?? []
+        appleIntelligence = (try? c.decodeIfPresent(Bool.self, forKey: .appleIntelligence)) ?? true
         answerLanguage = (try? c.decodeIfPresent(String.self, forKey: .answerLanguage)).flatMap { MobileLanguages.codes.contains($0) ? $0 : nil }
     }
 

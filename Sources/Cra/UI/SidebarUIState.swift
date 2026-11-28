@@ -31,7 +31,7 @@ final class SidebarUIState {
     /// The tabs calls share (Arc's yellow ring, TabSharing), and the ones a call can switch to instead.
     var sharedTabIDs: Set<UUID> = []
     var shareInsteadTabIDs: Set<UUID> = []
-    /// Tabs an MCP agent works in (MCPServer, MCPAgentPresence.lingers after its last call): a face on the row.
+    /// Tabs an MCP agent works in (MCPServer, MCPServer.linger after its last call): a face on the row.
     var agentTabIDs: Set<UUID> = []
     /// Recently audible tabs, held for 2 s after sound stops so the speaker stays steady.
     var audibleTabIDs: Set<UUID> = []
@@ -220,6 +220,8 @@ final class SidebarActions {
     /// A click on the sidebar's address: Arc's panel hanging from it (#663).
     var openAddressPanel: (CommandBarMode) -> Void = { _ in }
     var closeTab: (UUID) -> Void = { _ in }
+    /// Close Tab in a Favorite's right-click menu: it unloads, where ⌘W only deselects it (CloseSuccessor.pinnedClose).
+    var closeTabFromItsMenu: (UUID) -> Void = { _ in }
     /// A tab dragged out of every Cra window and let go there (screen point): Arc opens it in a
     /// Blank Window where it was dropped (GitHub #219).
     var tearOffTab: (UUID, NSPoint) -> Void = { _, _ in }
@@ -260,6 +262,7 @@ final class SidebarActions {
     /// Arc's "Share this tab instead" on a row (TabSharing): the call shares that tab, which shows.
     var shareTabInstead: (UUID) -> Void = { _ in }
     var separatePinnedTab: (UUID) -> Void = { _ in }
+    var separateFavorite: (UUID) -> Void = { _ in }
     var editPinnedURL: (UUID) -> Void = { _ in }
     var openURL: (String) -> Void = { _ in }
     /// Cra's one toast (ShinyToast) in this window.
@@ -294,6 +297,8 @@ final class SidebarActions {
     /// The sidebar URL field edited in place (#344): Return with what was typed, in the selected
     /// tab or, for another host from a pinned tab, a new one (SidebarAddressEdit.commit).
     var commitAddress: (String) -> Void = { _ in }
+    /// The toolbar's address edited in place: the same, for the tab its bar shows (a split pane's own).
+    var commitTabAddress: (UUID, String) -> Void = { _, _ in }
     /// A typed URL or search in a new tab (⌘ + New Tab pastes the clipboard's text).
     var openTyped: (String) -> Void = { _ in }
 }

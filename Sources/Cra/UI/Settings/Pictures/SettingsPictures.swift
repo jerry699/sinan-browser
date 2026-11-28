@@ -80,6 +80,96 @@ extension SettingsArt {
         }
     }
 
+    /// The room round the page, drawn at the margin the slider sets (Ideas #366): 6 of the picture's points
+    /// at Arc's 10, less than one at 1.
+    static func pageMargin(_ margin: Double) -> some View {
+        let t = ArtTint.lemon
+        return ArtCanvas(tint: t) {
+            ArtWindow(tint: t, margin: CGFloat(PageMargin.clamped(margin)) * 0.6) {
+                ArtLines(count: 5, width: 36).padding(.leading, 4).padding(.top, 4)
+            }
+            .at(9, 5)
+        }
+    }
+
+    /// Edge to edge, the page keeps its rounded corners: no margin, only the round (#582).
+    static var edgeToEdgeRounded: some View {
+        let t = ArtTint.lavender
+        return ArtCanvas(tint: t) {
+            ArtWindow(tint: t, edgeToEdge: true, roundedPage: true) {
+                ArtLines(count: 5, width: 36).padding(.leading, 4).padding(.top, 4)
+            }
+            .at(9, 5)
+        }
+    }
+
+    /// The sidebar a dark glass, the desktop's colours showing through it (#366).
+    static var translucentSidebar: some View {
+        let t = ArtTint.rose
+        return ArtCanvas(tint: t) {
+            // The desktop behind the window: two soft shapes the glass lets through.
+            Circle().fill(ArtTint.lemon.theme).frame(width: 26, height: 26).blur(radius: 1).at(4, 22)
+            Circle().fill(ArtTint.sky.theme).frame(width: 22, height: 22).blur(radius: 1).at(-2, 2)
+            ArtWindow(tint: t, glass: true) {
+                ArtLines(count: 5, width: 36).padding(.leading, 4).padding(.top, 4)
+            }
+            .at(9, 5)
+        }
+    }
+
+    /// The now-playing card at the bottom of the sidebar in the space's own colour, a selected tab's
+    /// white over it, with its play controls (#366).
+    static var nowPlayingTint: some View {
+        let t = ArtTint.mauve
+        return ArtCanvas(tint: t) {
+            ArtWindow(tint: t, rows: 3) {
+                ArtLines(count: 5, width: 36).padding(.leading, 4).padding(.top, 4)
+            }
+            .at(9, 5)
+            ZStack {
+                RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+                    .fill(t.theme.blendedToward(.white, NowPlayingTint.selectedWhite(dark: false)))
+                HStack(spacing: 1.6) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle().fill(t.ink.opacity(0.7)).frame(width: i == 1 ? 2.2 : 1.5, height: i == 1 ? 2.2 : 1.5)
+                    }
+                }
+            }
+            .frame(width: 13, height: 6)
+            .at(11.5, 42)
+        }
+    }
+
+    /// The island player at the bottom of the sidebar: a bar with a tab row's corners in the player's own white, its
+    /// artwork, a line of title and level bars (Discussion #761).
+    static var nowPlayingIsland: some View {
+        let t = ArtTint.mauve
+        let cover = ArtTint.peach.theme
+        return ArtCanvas(tint: t) {
+            ArtWindow(tint: t, rows: 3) {
+                ArtLines(count: 5, width: 36).padding(.leading, 4).padding(.top, 4)
+            }
+            .at(9, 5)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.2, style: .continuous).fill(t.theme.blendedToward(.white, 0.9))
+                HStack(spacing: 1) {
+                    RoundedRectangle(cornerRadius: 0.7, style: .continuous).fill(cover).frame(width: 3.4, height: 3.4)
+                    Capsule().fill(t.ink.opacity(0.6)).frame(width: 3.6, height: 1)
+                    Spacer(minLength: 0)
+                    HStack(alignment: .bottom, spacing: 0.45) {
+                        ForEach([1.8, 2.8, 1.3, 2.3], id: \.self) { h in
+                            Capsule().fill(t.ink.opacity(0.6)).frame(width: 0.6, height: h)
+                        }
+                    }
+                }
+                .padding(.horizontal, 0.9)
+            }
+            .frame(width: 13, height: 5.4)
+            .clipShape(RoundedRectangle(cornerRadius: 1.2, style: .continuous))
+            .at(11.5, 42)
+        }
+    }
+
     /// The page fills the card, and the toolbar slides in over its top where the pointer is.
     static var autoHideToolbar: some View {
         let t = ArtTint.mint

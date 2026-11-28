@@ -406,12 +406,14 @@ public struct SidebarDocument: Codable, Equatable {
     public var items: [SidebarItem]
     /// Profiles besides Default (missing in files from before profiles).
     public var profiles: [BrowserProfile]?
+    /// The Default profile's name once renamed (ProfileNames, #666); missing while it is "Default".
+    public var defaultProfileName: String?
     /// Arc's favorites per profile (topApps{profile}), with AppSettings.sharedFavorites on: the
     /// list each profile's spaces show. A list outlives its spaces, as in Arc (#154).
     public var profileFavorites: [ProfileFavorites]?
 
     public init(version: Int = 1, spaceOrder: [UUID], spaces: [Space], favoritesContainerID: UUID? = nil, items: [SidebarItem],
-                profiles: [BrowserProfile]? = nil, profileFavorites: [ProfileFavorites]? = nil) {
+                profiles: [BrowserProfile]? = nil, profileFavorites: [ProfileFavorites]? = nil, defaultProfileName: String? = nil) {
         self.version = version
         self.spaceOrder = spaceOrder
         self.spaces = spaces
@@ -419,6 +421,7 @@ public struct SidebarDocument: Codable, Equatable {
         self.items = items
         self.profiles = profiles
         self.profileFavorites = profileFavorites
+        self.defaultProfileName = defaultProfileName
     }
 
     public static func fresh() -> SidebarDocument {
@@ -643,11 +646,39 @@ public struct AppSettings: Codable, Equatable {
     public var autoPictureInPictureSites: [String: Bool] = [:]
     /// Dia's onboarding privacy choice "Block third-party ads and trackers": requests
     /// to listed ad and tracker domains are cancelled unless they are first-party.
-    public var blockAdsAndTrackers: Bool = true
+    public var adAwayEnabled = true
+    public var anudeepEnabled = true
+    /// Combined state for the debug command that toggles both offline sources.
+    public var blockAdsAndTrackers: Bool {
+        get { adAwayEnabled || anudeepEnabled }
+        set { adAwayEnabled = newValue; anudeepEnabled = newValue }
+    }
     /// Settings ▸ Privacy ▸ Block lists (#507, not in Arc or Dia): the addresses of lists added on top
-    /// of Cra's own, blocked under `blockAdsAndTrackers` (CustomBlocklist). Fetched copies live in
+    /// of Cra's own, selected independently (CustomBlocklist). Fetched copies live in
     /// the data folder's Blocklists folder.
     public var customBlocklists: [String] = []
+    public var disabledCustomBlocklists: [String] = []
+    /// 1 once Strict's page lists came in (#845, `upgradeStrictLists`); settings from before say 0.
+    public var strictListsVersion = 1
+    public var personalBlockFilters: String?
+    /// Exact HTTP(S) hosts where the user paused list filtering.
+    public var pausedFilterHosts: Set<String>?
+    public static func filterHost(_ address: String) -> String? {
+        guard let url = URL(string: address), let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme), let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        return host
+    }
+    public mutating func toggleFilters(on host: String) {
+        var hosts = pausedFilterHosts ?? []
+        if !hosts.insert(host).inserted { hosts.remove(host) }
+        pausedFilterHosts = hosts.isEmpty ? nil : hosts
+    }
+
+    public var personalFiltersEnabled = true
+    public var activePersonalFilters: String? { personalFiltersEnabled ? personalBlockFilters : nil }
+    public var hasActiveBlockFilters: Bool {
+        blockAdsAndTrackers || !customBlocklists.isEmpty || !(activePersonalFilters ?? "").isEmpty
+    }
     /// Dia's Tabs ▸ "Haptic feedback when reordering tabs" (tabReorderingHapticsEnabled).
     public var hapticFeedbackOnReorder: Bool = true
     /// Dia's Advanced ▸ "Warn before quitting" (shouldWarnBeforeQuitting, off by default).
@@ -712,6 +743,7 @@ public struct AppSettings: Codable, Equatable {
     public var outlookMailPreviews: Bool = true
     public var outlookCalendarPreviews: Bool = true
     public var notionCalendarPreviews: Bool = true
+    public var pullRequestPreviews: Bool = true
     /// Cra's addition (PR #267, Dia-like): the open favorite's rim takes its logo's colours.
     /// Off keeps Arc's neutral 2 pt rim.
     public var favoriteLogoOutline: Bool = false
@@ -727,9 +759,14 @@ public struct AppSettings: Codable, Equatable {
     /// Arc's searchSuggestEnabled: the command bar asks the search engine for suggestions
     /// as you type and fills its rows with them.
     public var searchSuggestions: Bool = true
-    /// GitHub #307, not in Arc: ⌘T searches and lists only the open tabs of the window's space
-    /// (`TabSearchScope.commandBarTabs`). Off is Arc's bar, which finds a tab in any space.
-    public var commandBarCurrentSpaceOnly: Bool = false
+    /// ⌘T searches and lists only the open tabs of the window's space (`TabSearchScope.commandBarTabs`),
+    /// as Arc's bar does: checked live in Arc 1.174 (23 Nov 2026, #716), a pinned tab of another space on
+    /// the same profile never came up as Switch to Tab, only as a history row. Off (#307's switch) finds a
+    /// tab in any space. Cra 0.1.38–0.1.54 had it off by default.
+    public var commandBarCurrentSpaceOnly: Bool = true
+    /// settings.json from before #716 had the switch off for everyone, by the old default: without this
+    /// mark it is turned on once, to Arc's behaviour.
+    public var commandBarScopeMigrated: Bool = true
     /// GitHub #601, not in Arc: ⇧⌘T reopens the tab closed last in the window's space and stays
     /// there (`ReopenClosedTab.next(isInCurrentSpace:)`). Off is Arc's, which switches to the space
     /// the tab closed last was in.
@@ -750,6 +787,19 @@ public struct AppSettings: Codable, Equatable {
     /// GitHub #24, not in Arc: the page fills the window with no margin and no rounded
     /// card, like a traditional browser. Off by default.
     public var edgeToEdgeContent: Bool = false
+    /// Ideas #582, not in Arc: edge to edge, the pages keep their rounded corners (CardFill.cornerRadius),
+    /// still with no margin or shadow. Only means something while `edgeToEdgeContent` is on.
+    public var edgeToEdgeRoundedCorners: Bool = false
+    /// Ideas #366, not in Arc: the room round the page card in a window, 1 to 10 pt (PageMargin). Arc's 10 by
+    /// default; edge to edge (`edgeToEdgeContent`) is its zero and wins while on.
+    public var pageMargin: Double = PageMargin.arc
+    /// Ideas #366, not in Arc: the sidebar and the window's ground are a thin glass over what is behind
+    /// the window, and the floating sidebar over the page it covers (SidebarGlass). Off by default.
+    public var translucentSidebar: Bool = false
+    /// Ideas #366, not in Arc: the now-playing cards' colour (NowPlayingTint). Arc's by default.
+    public var nowPlayingTint: NowPlayingTint = .arc
+    /// Discussion #761, not in Arc: the now-playing player's look (NowPlayingStyle). Arc's cards by default.
+    public var nowPlayingStyle: NowPlayingStyle = .arc
     /// GitHub #464, not in Arc: the sidebar docks on the window's right (SidebarSide). Left is Arc's.
     public var sidebarSide: SidebarSide = .left
     /// GitHub #91, Settings ▸ Performance: Cra records its own performance on this Mac (stalls,
@@ -778,12 +828,20 @@ public struct AppSettings: Codable, Equatable {
     /// Arc Max's Instant Links (instantLinksEnabled): Shift-Return on a search in ⌘T has the Mac's
     /// Apple Intelligence model turn it into searches, and opens the top results. Off by default, like Arc Max.
     public var instantLinks: Bool = false
+    /// Arc Max's ChatGPT in the Command Bar (gptSiteSearchEnabled, #828): "ChatGPT" and Tab in ⌘T, or ⌥⌘G, asks
+    /// ChatGPT on chatgpt.com, as in Arc. Off by default, like Arc Max.
+    public var chatGPTInCommandBar: Bool = false
     /// Arc's per-profile Download location (#190), by DownloadLocation.key(profileID:). A profile
     /// that isn't here saves to the Downloads folder without asking.
     public var downloadLocations: [String: DownloadLocation] = [:]
     /// Arc's per-profile "New documents" (#375), by NewDocumentApp.key(profileID:): the app the
     /// command bar's "New …" command opens. A profile that isn't here has none (Arc's "——").
     public var newDocumentApps: [String: NewDocumentApp] = [:]
+    /// Arc's per-profile "Archive tabs after" (#693), by DownloadLocation.key(profileID:): "never" or an
+    /// AutoArchiveThreshold's name. Default's stays `autoArchive`/`autoArchiveEnabled`; a profile that isn't
+    /// here archives as Default does (`autoArchive(profileID:)`). Strings, so a name from a newer Cra
+    /// can't fail the file.
+    public var profileAutoArchive: [String: String] = [:]
     /// Settings ▸ Privacy ▸ "Share anonymous usage stats" and onboarding's Privacy step (Dia's
     /// "Help improve Dia" row): a daily UsageStats report. Off unless the user turns it on.
     public var shareUsageStats: Bool = false
@@ -912,6 +970,8 @@ public struct WindowPrefs: Codable, Equatable {
     /// The sidebar as it was last hidden or shown (⌘S, a drag of its edge), in any window: what a new
     /// window opens with, incognito and Blank Windows too. Arc's sidebarViewPreferences.sidebarMode (#644).
     public var sidebarVisibleInNewWindows = true
+    /// The profile picked for each site in a Little Window (Arc's domainToProfilePreferences).
+    public var siteProfiles = SiteProfiles()
 
     public init(sidebarWidth: Double = 328, expandedFolders: Set<UUID> = [], collapsedPinnedSpaces: Set<UUID> = [],
                 favoritesEmptyStateDismissed: Set<UUID> = [], peekedFolders: [UUID: [UUID]] = [:],
@@ -948,6 +1008,10 @@ public struct HistoryEntry: Codable, Equatable {
     /// space on one profile doesn't suggest what was browsed on another (#609). nil for an entry
     /// saved before Cra kept them: its profile isn't known, and it is suggested everywhere as before.
     public var profiles: [String]? = nil
+    /// How often the address was entered in the command bar (typed, or an Open URL or visited-page row
+    /// picked; not a search), as Chromium's typed_count: ⌘T completes a site's name to the address typed
+    /// most on it (TypedCompletion, #667). nil for never, so older files load and save as they were.
+    public var typedCount: Int? = nil
 
     public init(url: String, title: String, lastVisit: Date, visitCount: Int) {
         self.url = url
@@ -976,7 +1040,7 @@ public struct RankingData: Codable, Equatable {
 // Tolerant decoding so new preference keys never reset the file.
 extension AppSettings {
     /// Keys earlier versions wrote; read once and replaced.
-    private enum LegacyKeys: String, CodingKey { case openExternalLinksInLittleWindow }
+    private enum LegacyKeys: String, CodingKey { case openExternalLinksInLittleWindow, blockAdsAndTrackers }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1008,8 +1072,23 @@ extension AppSettings {
         chromeEngine = try c.decodeIfPresent(Bool.self, forKey: .chromeEngine) ?? true
         autoPictureInPicture = try c.decodeIfPresent(Bool.self, forKey: .autoPictureInPicture) ?? true
         autoPictureInPictureSites = (try? c.decodeIfPresent([String: Bool].self, forKey: .autoPictureInPictureSites)) ?? [:]
-        blockAdsAndTrackers = try c.decodeIfPresent(Bool.self, forKey: .blockAdsAndTrackers) ?? true
-        customBlocklists = (try? c.decodeIfPresent([String].self, forKey: .customBlocklists)) ?? []
+        let old = try decoder.container(keyedBy: LegacyKeys.self)
+        let oldMaster = try old.decodeIfPresent(Bool.self, forKey: .blockAdsAndTrackers) ?? true
+        adAwayEnabled = try c.decodeIfPresent(Bool.self, forKey: .adAwayEnabled) ?? oldMaster
+        anudeepEnabled = try c.decodeIfPresent(Bool.self, forKey: .anudeepEnabled) ?? oldMaster
+        disabledCustomBlocklists = (try? c.decodeIfPresent([String].self, forKey: .disabledCustomBlocklists)) ?? []
+        personalBlockFilters = try c.decodeIfPresent(String.self, forKey: .personalBlockFilters)
+        let addresses = (try? c.decodeIfPresent([String].self, forKey: .customBlocklists)) ?? []
+        pausedFilterHosts = try c.decodeIfPresent(Set<String>.self, forKey: .pausedFilterHosts)
+        let previousPersonalSetting = try c.decodeIfPresent(Bool.self, forKey: .personalFiltersEnabled)
+        let legacyMasterOff = !c.contains(.adAwayEnabled) && !c.contains(.anudeepEnabled) && !oldMaster
+        personalFiltersEnabled = previousPersonalSetting ?? !legacyMasterOff
+        customBlocklists = addresses
+        strictListsVersion = try c.decodeIfPresent(Int.self, forKey: .strictListsVersion) ?? 0
+        upgradeStrictLists()
+        if legacyMasterOff {
+            for address in customBlocklists { setFilterList(address, enabled: false) }
+        }
         if let d = try? c.decodeIfPresent(LinkDestination.self, forKey: .defaultLinkDestination) {
             defaultLinkDestination = d
         } else {
@@ -1057,19 +1136,27 @@ extension AppSettings {
         outlookMailPreviews = try c.decodeIfPresent(Bool.self, forKey: .outlookMailPreviews) ?? true
         outlookCalendarPreviews = try c.decodeIfPresent(Bool.self, forKey: .outlookCalendarPreviews) ?? true
         notionCalendarPreviews = try c.decodeIfPresent(Bool.self, forKey: .notionCalendarPreviews) ?? true
+        pullRequestPreviews = try c.decodeIfPresent(Bool.self, forKey: .pullRequestPreviews) ?? true
         favoriteLogoOutline = try c.decodeIfPresent(Bool.self, forKey: .favoriteLogoOutline) ?? false
         liveCalendar = try c.decodeIfPresent(Bool.self, forKey: .liveCalendar) ?? true
         calendarHoverPreview = try c.decodeIfPresent(Bool.self, forKey: .calendarHoverPreview) ?? true
         calendarTimeToNextMeeting = try c.decodeIfPresent(Bool.self, forKey: .calendarTimeToNextMeeting) ?? true
         calendarMeetingLink = (try? c.decodeIfPresent(CalendarPreview.LinkTiming.self, forKey: .calendarMeetingLink)) ?? .twoMinutes
         searchSuggestions = try c.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
-        commandBarCurrentSpaceOnly = try c.decodeIfPresent(Bool.self, forKey: .commandBarCurrentSpaceOnly) ?? false
+        if try c.decodeIfPresent(Bool.self, forKey: .commandBarScopeMigrated) == true {
+            commandBarCurrentSpaceOnly = try c.decodeIfPresent(Bool.self, forKey: .commandBarCurrentSpaceOnly) ?? true
+        }
         reopenClosedTabCurrentSpaceOnly = try c.decodeIfPresent(Bool.self, forKey: .reopenClosedTabCurrentSpaceOnly) ?? false
         commandBarSiteColor = try c.decodeIfPresent(Bool.self, forKey: .commandBarSiteColor) ?? false
         editAddressInPlace = try c.decodeIfPresent(Bool.self, forKey: .editAddressInPlace) ?? false
         showSpaceHeaderOnSingleSpace = try c.decodeIfPresent(Bool.self, forKey: .showSpaceHeaderOnSingleSpace) ?? true
         sharedFavorites = try c.decodeIfPresent(Bool.self, forKey: .sharedFavorites) ?? false
         edgeToEdgeContent = try c.decodeIfPresent(Bool.self, forKey: .edgeToEdgeContent) ?? false
+        edgeToEdgeRoundedCorners = try c.decodeIfPresent(Bool.self, forKey: .edgeToEdgeRoundedCorners) ?? false
+        pageMargin = (try? c.decodeIfPresent(Double.self, forKey: .pageMargin)) ?? PageMargin.arc
+        translucentSidebar = try c.decodeIfPresent(Bool.self, forKey: .translucentSidebar) ?? false
+        nowPlayingTint = (try? c.decodeIfPresent(NowPlayingTint.self, forKey: .nowPlayingTint)) ?? .arc
+        nowPlayingStyle = (try? c.decodeIfPresent(NowPlayingStyle.self, forKey: .nowPlayingStyle)) ?? .arc
         sidebarSide = (try? c.decodeIfPresent(SidebarSide.self, forKey: .sidebarSide)) ?? .left
         perfRecording = try c.decodeIfPresent(Bool.self, forKey: .perfRecording) ?? Self.perfRecordingDefault
         perfHidesSiteNames = try c.decodeIfPresent(Bool.self, forKey: .perfHidesSiteNames) ?? false
@@ -1079,8 +1166,10 @@ extension AppSettings {
         fiveSecondPreviews = try c.decodeIfPresent(Bool.self, forKey: .fiveSecondPreviews) ?? false
         askOnPage = try c.decodeIfPresent(Bool.self, forKey: .askOnPage) ?? false
         instantLinks = try c.decodeIfPresent(Bool.self, forKey: .instantLinks) ?? false
+        chatGPTInCommandBar = try c.decodeIfPresent(Bool.self, forKey: .chatGPTInCommandBar) ?? false
         downloadLocations = (try? c.decodeIfPresent([String: DownloadLocation].self, forKey: .downloadLocations)) ?? [:]
         newDocumentApps = NewDocumentApp.decodeMap(try? c.decodeIfPresent([String: String].self, forKey: .newDocumentApps))
+        profileAutoArchive = (try? c.decodeIfPresent([String: String].self, forKey: .profileAutoArchive)) ?? [:]
         shareUsageStats = try c.decodeIfPresent(Bool.self, forKey: .shareUsageStats) ?? false
         crashReports = (try? c.decodeIfPresent(CrashReportChoice.self, forKey: .crashReports)) ?? .ask
         askedToShare = try c.decodeIfPresent(Bool.self, forKey: .askedToShare) ?? false
@@ -1112,6 +1201,7 @@ extension WindowPrefs {
         // Files from before #644 carry no choice: the first saved window's sidebar stands in for it.
         sidebarVisibleInNewWindows = try c.decodeIfPresent(Bool.self, forKey: .sidebarVisibleInNewWindows)
             ?? windows.first?.sidebarVisible ?? true
+        siteProfiles = (try? c.decodeIfPresent(SiteProfiles.self, forKey: .siteProfiles)) ?? SiteProfiles()
     }
 }
 

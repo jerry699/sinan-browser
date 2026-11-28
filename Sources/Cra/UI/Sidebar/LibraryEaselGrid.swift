@@ -3,7 +3,7 @@ import AppKit
 /// Library ▸ Easels as Arc 1.172.1 lays it out (Victor's Arc, 8 Nov 2026, 2x stills): the media
 /// grid's tiles, two to a row, each holding a light card (white 3 pt rim, 8 pt corners) with the
 /// easel drawn small on it and, at its bottom left, Arc's pink squiggle over the title in bold.
-/// No day headers. Click opens the easel; right-click: Delete.
+/// No day headers. Click opens the easel; right-click: Share Easel… (Cra's link, EaselShare), Delete.
 struct EaselEntry: Equatable {
     var id: UUID
     var title: String
@@ -13,6 +13,7 @@ struct EaselEntry: Equatable {
 final class EaselRowCell: NSView {
     private var tiles: [EaselTile] = []
     var open: (EaselEntry) -> Void = { _ in }
+    var share: (EaselEntry) -> Void = { _ in }
     var delete: (EaselEntry) -> Void = { _ in }
 
     override var isFlipped: Bool { true }
@@ -21,6 +22,7 @@ final class EaselRowCell: NSView {
         while tiles.count < 2 {
             let t = EaselTile()
             t.open = { [weak self] in self?.open($0) }
+            t.share = { [weak self] in self?.share($0) }
             t.delete = { [weak self] in self?.delete($0) }
             tiles.append(t)
             addSubview(t)
@@ -42,6 +44,7 @@ final class EaselRowCell: NSView {
 
 final class EaselTile: NSView {
     var open: (EaselEntry) -> Void = { _ in }
+    var share: (EaselEntry) -> Void = { _ in }
     var delete: (EaselEntry) -> Void = { _ in }
     private var entry: EaselEntry?
     private var ink: NSColor = .white
@@ -131,6 +134,12 @@ final class EaselTile: NSView {
         layer.zPosition = hovering ? 1 : 0
     }
 
+    /// cra://debug?easelTile=open|delete: a click on the tile (its Peek), or its menu's Delete.
+    func debugPress(_ what: String) {
+        guard let entry else { return }
+        if what == "delete" { delete(entry) } else { open(entry) }
+    }
+
     /// cra://debug?easelTileHover=1|0: the pointer over the tile, or gone; what it then shows.
     func debugHover(_ on: Bool, done: @escaping (String) -> Void) {
         hovering = on
@@ -176,6 +185,8 @@ final class EaselTile: NSView {
         guard let entry else { return nil }
         let m = NSMenu()
         m.autoenablesItems = false
+        MenuItems.add(m, "Share Easel…") { [weak self] in self?.share(entry) }
+        m.addItem(.separator())
         MenuItems.add(m, "Delete") { [weak self] in self?.delete(entry) }
         return m
     }
@@ -245,21 +256,5 @@ enum EaselThumbnail {
         }
         cache[id] = (edited, image)
         return image
-    }
-}
-
-extension EaselFiles {
-    /// Deleting from Library ▸ Easels: the easel's file and its pictures.
-    /// Easels deleted this session: a tab still closing must not write one back.
-    @MainActor static var deleted: Set<UUID> = []
-
-    @MainActor static func delete(_ id: UUID) {
-        deleted.insert(id)
-        let names = [id.uuidString + ".json", id.uuidString + ".json.bak", id.uuidString]
-        let remove = { for n in names { try? FileManager.default.removeItem(at: folder.appendingPathComponent(n)) } }
-        remove()
-        // An edit made just before is written 0.4 s later (JSONStore.save): remove what it writes too.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: remove)
-        listChanged()
     }
 }

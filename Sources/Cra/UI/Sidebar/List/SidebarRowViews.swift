@@ -352,24 +352,32 @@ final class SidebarGlyphButton: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { takesClickFromChildWindow }
     // Rows hide their buttons rather than remove them: a hidden one must not take the row's
     // clicks or run the action it had when it last showed (AppKit's hitTest skips hidden views).
-    override func hitTest(_ point: NSPoint) -> NSView? { !isHiddenOrHasHiddenAncestor && frame.contains(point) ? self : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        !isHiddenOrHasHiddenAncestor && frame.insetBy(dx: -hitOutset, dy: 0).contains(point) ? self : nil
+    }
+
+    /// Clicks and hover reach this far past the drawn box, left and right (the sidebar header's 2 pt gaps, #818).
+    var hitOutset: CGFloat = 0 { didSet { if hitOutset != oldValue { updateTrackingAreas() } } }
+    private var hitArea: NSRect { bounds.insetBy(dx: -hitOutset, dy: 0) }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for t in trackingAreas where t.owner === self { removeTrackingArea(t) }
         // A new area under the pointer gets no mouseEntered, so without assumeInside it never sends
         // the mouseExited either and the hover fill sticks (buttons moved under a resting pointer).
-        let inside = window.map { visibleRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
-        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]
+        let area = hitOutset > 0 ? hitArea : visibleRect
+        let inside = window.map { area.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+        if hitOutset == 0 { options.insert(.inVisibleRect) }
         if inside { options.insert(.assumeInside) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil))
+        addTrackingArea(NSTrackingArea(rect: hitOutset > 0 ? hitArea : .zero, options: options, owner: self, userInfo: nil))
         if hovering != inside { hovering = inside }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         // A button that appears under a resting pointer (a row's hover buttons) is hovered at once.
-        if let w = window { hovering = bounds.contains(convert(w.mouseLocationOutsideOfEventStream, from: nil)) }
+        if let w = window { hovering = hitArea.contains(convert(w.mouseLocationOutsideOfEventStream, from: nil)) }
     }
 
     // Rows hide their buttons rather than remove them; a button shown again under the pointer is hovered.
@@ -391,12 +399,12 @@ final class SidebarGlyphButton: NSView {
         if turnsOnPress, enabled { glyph.pressTurn(true) }
     }
     override func mouseDragged(with event: NSEvent) {
-        if turnsOnPress, enabled { glyph.pressTurn(bounds.contains(convert(event.locationInWindow, from: nil))) }
+        if turnsOnPress, enabled { glyph.pressTurn(hitArea.contains(convert(event.locationInWindow, from: nil))) }
     }
     override func mouseUp(with event: NSEvent) {
         if turnsOnPress { glyph.pressTurn(false) }
         if hold.up() { return }
-        if enabled, bounds.contains(convert(event.locationInWindow, from: nil)) { action() }
+        if enabled, hitArea.contains(convert(event.locationInWindow, from: nil)) { action() }
     }
     override func rightMouseDown(with event: NSEvent) {
         guard enabled, let secondaryAction else { return super.rightMouseDown(with: event) }
@@ -1730,6 +1738,8 @@ final class FolderRowView: SidebarRowView, NSTextFieldDelegate {
         guard let m = model, let list, list.ui.renamingID == m.id, let f = renameField else { return }
         list.store.rename(m.id, to: f.stringValue.isEmpty ? "Folder" : f.stringValue)
         list.ui.renamingID = nil
+        // A count, not the name: cra.log keeps no names.
+        CraLog.note(f.stringValue == m.renameText ? "folder rename: name unchanged" : "folder rename: new name, \(f.stringValue.count) characters")
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
@@ -1742,13 +1752,36 @@ final class FolderRowView: SidebarRowView, NSTextFieldDelegate {
 
     override func dragItemID(at point: NSPoint) -> UUID? { model?.editing == true ? nil : model?.id }
 
-    // Every click toggles, however fast they come: double-click-to-rename made quick
-    // open/close clicks start a rename that then swallowed the clicks. Rename is in the menu.
+    // A click opens or closes the folder at once. A double-click on the name renames it and puts the
+    // folder back as the first click found it (ToggleRowClick); on the glyph every click toggles,
+    // however fast they come (0.1.18 dropped a whole-row double-click rename: fast open/close clicks
+    // started renames).
     override func click(_ event: NSEvent, at point: NSPoint) {
         guard let m = model, let list else { return }
-        if m.editing { commitRename() }
-        list.store.setExpanded(m.id, FolderPeek.clickOpens(expanded: m.expanded))
+        if m.editing {
+            commitRename()
+            list.store.setExpanded(m.id, FolderPeek.clickOpens(expanded: m.expanded))
+            return
+        }
+        // The pair's first click toggled this folder only if it came within the double-click interval.
+        let firstToggled = toggledAt.map { event.timestamp - $0 <= NSEvent.doubleClickInterval } ?? false
+        switch ToggleRowClick.action(clickCount: event.clickCount, onName: point.x >= glyph.frame.maxX, firstClickToggled: firstToggled) {
+        case .toggle:
+            // The store's state, not the row's: two quick clicks can both come before the row redraws.
+            list.store.setExpanded(m.id, FolderPeek.clickOpens(expanded: list.store.isExpanded(m.id)))
+            toggledAt = event.timestamp
+        case .rename(let undoToggle):
+            toggledAt = nil
+            let open = list.store.isExpanded(m.id)
+            if undoToggle { list.store.setExpanded(m.id, !open) }
+            CraLog.note("folder double-click: rename\(undoToggle ? ", put back \(open ? "closed" : "open")" : "")")
+            list.ui.renamingID = m.id
+        }
     }
+
+    /// When this row's last click opened or closed the folder, for a double-click's second click to
+    /// put it back.
+    private var toggledAt: TimeInterval?
 
     override func contextMenu(at point: NSPoint) -> NSMenu? {
         guard let m = model, let list, let item = list.store.item(m.id) else { return nil }
@@ -2473,8 +2506,22 @@ final class NewTabRowView: SidebarRowView {
         refreshBackground()
     }
 
+    /// Hovered, an ordinary hovered row with its muted ink; the selected look only while ⌘T's bar is open
+    /// (CraCore NewTabRowLook, #788).
+    private var look: NewTabRowLook { NewTabRowLook(hovered: isHovered, barOpen: active) }
+
+    /// cra://debug?newTabRow (#788): the palette slots the row draws with now, "fill=<selected|hover|clear|other>
+    /// ink=<primary|secondary|other> lifted=<0|1> hovered=<0|1>".
+    var debugLook: String {
+        let fill = baseFill()
+        let f = fill == colors.selectedFill ? "selected" : fill == colors.hoverFill ? "hover" : fill == .clear ? "clear" : "other"
+        let ink = label.textColor
+        let i = ink == colors.textPrimary ? "primary" : ink == colors.textSecondary ? "secondary" : "other"
+        return "fill=\(f) ink=\(i) lifted=\(look.lifted ? 1 : 0) hovered=\(isHovered ? 1 : 0)"
+    }
+
     private func refreshColors() {
-        let c = isHovered || active ? colors.textPrimary : colors.textSecondary
+        let c = look.ink == .primary ? colors.textPrimary : colors.textSecondary
         plus.contentTintColor = c
         label.textColor = c
         preview.textColor = colors.textTertiary
@@ -2485,11 +2532,17 @@ final class NewTabRowView: SidebarRowView {
         refreshColors()
     }
 
-    override func baseFill() -> NSColor { isHovered || active ? colors.selectedFill : .clear }
+    override func baseFill() -> NSColor {
+        switch look.fill {
+        case .selected: return colors.selectedFill
+        case .hover: return colors.hoverFill
+        case .none: return .clear
+        }
+    }
 
     override func refreshBackground() {
         super.refreshBackground()
-        setLifted(active)
+        setLifted(look.lifted)
     }
 
     override func hoverChanged() {

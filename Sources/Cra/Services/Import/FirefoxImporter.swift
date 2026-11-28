@@ -37,20 +37,24 @@ enum FirefoxImporter {
         guard let profile = defaultProfile(root: root) else { throw ImportError.notFound(browser) }
         var plan = ImportPlan(source: browser)
         var space = ImportedSpace(title: browser, emoji: "🦊", theme: nil)
+        var skipped: [ImportSkip] = []
         if let db = SQLiteSnapshot(copying: profile.appendingPathComponent("places.sqlite")) {
-            space.pinned = bookmarks(db)
+            space.pinned = bookmarks(db, skip: { skipped.append($0) })
         }
-        space.today = openTabs(profile: profile)
-        if !space.pinned.isEmpty || !space.today.isEmpty { plan.spaces.append(space) }
+        space.today = openTabs(profile: profile, skip: { skipped.append($0) })
+        space.skipped = skipped
+        if !space.pinned.isEmpty || !space.today.isEmpty { plan.spaces.append(space) } else { plan.skipped = skipped }
+        ImportFavicons.attach(to: &plan, folder: "cra-firefox-favicons", from: ImportSource.Kind.firefox.iconStores(dataDir: root))
         return plan
     }
 
-    static func bookmarks(profile: URL) -> [ImportedItem] {
-        SQLiteSnapshot(copying: profile.appendingPathComponent("places.sqlite")).map(bookmarks) ?? []
+    /// `skip` hears of each bookmark left out.
+    static func bookmarks(profile: URL, skip: (ImportSkip) -> Void = { _ in }) -> [ImportedItem] {
+        SQLiteSnapshot(copying: profile.appendingPathComponent("places.sqlite")).map { bookmarks($0, skip: skip) } ?? []
     }
 
     /// The toolbar's bookmarks, then the menu and unsorted bookmarks as folders.
-    private static func bookmarks(_ db: SQLiteSnapshot) -> [ImportedItem] {
+    private static func bookmarks(_ db: SQLiteSnapshot, skip: (ImportSkip) -> Void) -> [ImportedItem] {
         let rows = db.rows("""
             SELECT b.id, b.type, b.parent, b.title, b.guid, b.dateAdded, p.url, p.title AS ptitle
             FROM moz_bookmarks b LEFT JOIN moz_places p ON b.fk = p.id ORDER BY b.parent, b.position
@@ -68,7 +72,10 @@ enum FirefoxImporter {
             let created = (r["dateAdded"] as? Int64).map { Date(timeIntervalSince1970: Double($0) / 1_000_000) } ?? Date()
             switch r["type"] as? Int64 {
             case 1:
-                guard let u = r["url"] as? String, u.hasPrefix("http") else { return nil }
+                guard let u = r["url"] as? String, ImportedAddress.keeps(u) else {
+                    ImportSkip.leftOut(r["url"] as? String, title: title.isEmpty ? (r["ptitle"] as? String ?? "") : title).map(skip)
+                    return nil
+                }
                 return ImportedItem(customTitle: title.isEmpty ? nil : title, pageTitle: title.isEmpty ? (r["ptitle"] as? String ?? "") : title,
                                     url: u, createdAt: created)
             case 2:
@@ -89,18 +96,26 @@ enum FirefoxImporter {
     }
 
     /// The current tab of every open window, from recovery.jsonlz4 while
-    /// Firefox runs or sessionstore.jsonlz4 after it quit.
-    static func openTabs(profile: URL) -> [ImportedItem] {
+    /// Firefox runs or sessionstore.jsonlz4 after it quit. `skip` hears of each tab left out, or of
+    /// a session store that could not be read.
+    static func openTabs(profile: URL, skip: (ImportSkip) -> Void = { _ in }) -> [ImportedItem] {
         let candidates = ["sessionstore-backups/recovery.jsonlz4", "sessionstore.jsonlz4", "sessionstore-backups/previous.jsonlz4"]
-        guard let data = candidates.lazy.compactMap({ try? Data(contentsOf: profile.appendingPathComponent($0)) }).first,
-              let json = mozLz4(data),
-              let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else { return [] }
+            .map { profile.appendingPathComponent($0) }
+        guard let (file, data) = candidates.lazy.compactMap({ f in (try? Data(contentsOf: f)).map { (f, $0) } }).first else { return [] }
+        guard let json = mozLz4(data),
+              let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else {
+            skip(.unreadable("Open tabs", file: file.path))
+            return []
+        }
         var out: [ImportedItem] = []
         for w in root["windows"] as? [[String: Any]] ?? [] {
             for t in w["tabs"] as? [[String: Any]] ?? [] {
                 guard let entries = t["entries"] as? [[String: Any]], !entries.isEmpty else { continue }
                 let index = min(max((t["index"] as? Int ?? entries.count) - 1, 0), entries.count - 1)
-                guard let u = entries[index]["url"] as? String, u.hasPrefix("http") else { continue }
+                guard let u = entries[index]["url"] as? String, ImportedAddress.keeps(u) else {
+                    ImportSkip.leftOut(entries[index]["url"] as? String, title: entries[index]["title"] as? String ?? "").map(skip)
+                    continue
+                }
                 out.append(ImportedItem(pageTitle: entries[index]["title"] as? String ?? "", url: u))
             }
         }
@@ -120,20 +135,26 @@ enum FirefoxImporter {
         return n == size ? out : nil
     }
 
-    /// The largest icon per host from favicons.sqlite.
-    static func favicons(root: URL, hosts: [String]) -> [String: NSImage] {
+    /// The largest icon per host from favicons.sqlite, read in one pass over its pages, which have no
+    /// index on page_url.
+    static func favicons(root: URL, hosts: [String]) -> [String: Data] {
         guard let profile = defaultProfile(root: root),
               let db = SQLiteSnapshot(copying: profile.appendingPathComponent("favicons.sqlite")) else { return [:] }
-        var out: [String: NSImage] = [:]
-        for host in hosts {
-            let h = host.replacingOccurrences(of: "'", with: "")
-            let rows = db.rows("""
-                SELECT i.data FROM moz_icons i JOIN moz_icons_to_pages ip ON ip.icon_id = i.id JOIN moz_pages_w_icons p ON p.id = ip.page_id
-                WHERE p.page_url LIKE 'https://\(h)/%' OR p.page_url LIKE 'https://www.\(h)/%' ORDER BY i.width DESC LIMIT 1
-                """)
-            if let data = rows.first?["data"] as? Data, let img = NSImage(data: data) { out[host] = img }
+        var wanted: [String: [String]] = [:]
+        for host in hosts { for name in ImportFavicons.names(of: host) { wanted[name, default: []].append(host) } }
+        var best: [String: (icon: Int64, width: Int64)] = [:]
+        for r in db.rows("SELECT p.page_url, i.id, i.width FROM moz_pages_w_icons p JOIN moz_icons_to_pages ip ON ip.page_id = p.id JOIN moz_icons i ON i.id = ip.icon_id") {
+            guard let page = r["page_url"] as? String, let icon = r["id"] as? Int64, let width = r["width"] as? Int64,
+                  let owners = ImportFavicons.webHost(page).flatMap({ wanted[$0] }) else { continue }
+            for host in owners where width > best[host]?.width ?? -1 { best[host] = (icon, width) }
         }
-        return out
+        guard !best.isEmpty else { return [:] }
+        let ids = Set(best.values.map(\.icon)).map(String.init).joined(separator: ",")
+        var images: [Int64: Data] = [:]
+        for r in db.rows("SELECT id, data FROM moz_icons WHERE id IN (\(ids))") {
+            if let id = r["id"] as? Int64, let data = r["data"] as? Data { images[id] = data }
+        }
+        return best.compactMapValues { images[$0.icon] }
     }
 
     static func topSites(root: URL, limit: Int) -> [TopSite] {

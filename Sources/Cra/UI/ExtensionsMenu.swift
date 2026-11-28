@@ -1,4 +1,5 @@
 import AppKit
+import CraCEF
 import UniformTypeIdentifiers
 
 /// The menu bar's Extensions menu, after Dia 1.54 (Extensions, between History and
@@ -71,6 +72,132 @@ final class ExtensionsMenu: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
     /// How one extension's toolbar button draws: its own icon, monochrome, a symbol or an
     /// image file (GitHub #9). Also the pinned button's context menu.
+    /// A pinned extension's right-click menu in the toolbar: Arc's rows (CraCore ExtensionActionMenu,
+    /// #695), Cra's icon choices under Icon. `profile`: the Chromium profile folder the bar lists its pins
+    /// for; `open` opens a page in a new tab of the window.
+    static func actionMenu(for e: ExtensionStore.Entry, profile: String, open: @escaping (String) -> Void) -> NSMenu {
+        let id = e.extensionID
+        let menu = NSMenu(title: e.name)
+        let rows = ExtensionActionMenu.rows(name: e.name, hasOptions: e.optionsPath != nil, fromWebStore: e.managedByChrome)
+        for row in rows {
+            switch row {
+            case .separator: menu.addItem(.separator())
+            case .name(_, let opensWebStore):
+                let item = BlockMenuItem(title: row.title) { open(ExtensionActionMenu.webStorePage(id: id)) }
+                item.image = menuIcon(e.icon)
+                if !opensWebStore { item.action = nil }
+                menu.addItem(item)
+            case .ownItems:
+                // The extension's own rows (chrome.contextMenus for its action), from the engine (#695).
+                guard let page = Self.page(), page.responds(to: #selector(CraBrowser.extensionActionMenuItems(_:))) else { break }
+                let own = Self.ownMenuItems(page.extensionActionMenuItems(id), extension: id, page: page)
+                guard !own.isEmpty else { break }
+                own.forEach(menu.addItem)
+                menu.addItem(.separator())
+            case .siteAccess:
+                // The site access line for the page, from the engine (#695).
+                guard let page = Self.page(), page.responds(to: #selector(CraBrowser.extensionSiteAccess(_:))),
+                      let access = ExtensionSiteAccess(engine: page.extensionSiteAccess(id)) else { break }
+                menu.addItem(Self.siteAccessItem(access, extension: id, page: page, open: open))
+                menu.addItem(.separator())
+            case .remove:
+                menu.addItem(BlockMenuItem(title: row.title) { Self.confirmRemove(e, profile: profile) })
+            case .options:
+                if let path = e.optionsPath { menu.addItem(BlockMenuItem(title: row.title) { open(ExtensionActionMenu.optionsPage(id: id, path: path)) }) }
+            case .unpin:
+                menu.addItem(BlockMenuItem(title: row.title) { ExtensionStore.shared.setPinned(id, false, inProfile: profile) })
+            case .manage:
+                menu.addItem(BlockMenuItem(title: row.title) { open(ExtensionActionMenu.managePage(id: id)) })
+            case .webPermissions:
+                menu.addItem(BlockMenuItem(title: row.title) { open(ExtensionActionMenu.webPermissionsPage(id: id)) })
+            case .icon:
+                let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+                item.submenu = iconMenu(for: e)
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    /// The page the menu acts on: the browser window's current page.
+    @MainActor static func page() -> CraBrowser? { (NSApp.delegate as? AppDelegate)?.main?.currentBrowser }
+
+    /// The engine's rows (`extensionActionMenuItems`) as menu items: a click runs the row for the page (#695).
+    static func ownMenuItems(_ rows: [[String: Any]], extension id: String, page: CraBrowser) -> [NSMenuItem] {
+        rows.map { row in
+            let kind = row["kind"] as? String ?? "normal"
+            guard kind != "separator" else { return .separator() }
+            let title = row["title"] as? String ?? ""
+            let itemID = row["id"] as? String ?? ""
+            let children = row["children"] as? [[String: Any]] ?? []
+            if !children.isEmpty {
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                let sub = NSMenu(title: title)
+                ownMenuItems(children, extension: id, page: page).forEach(sub.addItem)
+                item.submenu = sub
+                return item
+            }
+            let item = BlockMenuItem(title: title) { [weak page] in _ = page?.runExtensionMenuItem(itemID, extension: id) }
+            if (row["enabled"] as? Bool) == false { item.action = nil }
+            if (row["checked"] as? Bool) == true { item.state = .on }
+            return item
+        }
+    }
+
+    /// "Can't Read or Change Site's Data", greyed out, or the submenu with the three choices and Learn More (#695).
+    static func siteAccessItem(_ access: ExtensionSiteAccess, extension id: String, page: CraBrowser, open: @escaping (String) -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: access.title, action: nil, keyEquivalent: "")
+        guard !access.rows.isEmpty else { return item }
+        let sub = NSMenu(title: access.title)
+        for row in access.rows {
+            if row.isSeparator { sub.addItem(.separator()); continue }
+            let choice = row.choice
+            let entry = BlockMenuItem(title: row.title) { [weak page] in
+                guard let choice else { open(ExtensionSiteAccess.learnMorePage); return }
+                let done = page?.setExtensionSiteAccess(choice.rawValue, extension: id) == true
+                CraLog.note("extension site access \(id.prefix(8)): \(choice.rawValue) \(done ? "set" : "refused")")
+            }
+            if !row.enabled { entry.action = nil }
+            if row.checked { entry.state = .on }
+            sub.addItem(entry)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    /// Remove from Cra: asked first, as Chrome's "Remove from Chrome…" does (#695). `profile`: the profile folder the
+    /// menu is for.
+    static func confirmRemove(_ e: ExtensionStore.Entry, profile: String) {
+        let dialog = AppDialog(title: "Remove “\(e.name)”?",
+                               message: ExtensionRemoval.message(isShared: ExtensionStore.shared.shares.isShared(e.extensionID),
+                                                                 isCraCopy: !e.managedByChrome, profileCount: e.profiles?.count),
+                               actions: [DialogAction("Remove", role: .destructive), .cancel])
+        let remove = { (r: NSApplication.ModalResponse) in if r == .alertFirstButtonReturn { Self.remove(e, profile: profile) } }
+        if let window = AppDialog.parentWindow { dialog.present(over: window, completion: remove) } else { remove(dialog.runModal()) }
+    }
+
+    /// Chromium uninstalls it from the profile the menu is for (`profile`, a profile folder), not the window's current
+    /// page, which can be another profile's: one without it crashed Cra (crash-extension-remove-other-profile). A copy
+    /// Cra loads itself from its folder goes too, or it would load again at the next launch.
+    @MainActor static func remove(_ e: ExtensionStore.Entry, profile: String) {
+        // Shared (discussion #595): from every profile, as Settings removes it. Chrome keeps it otherwise.
+        if ExtensionStore.shared.shares.isShared(e.extensionID) {
+            ExtensionStore.shared.removeShared(e)
+            CraLog.note("extension removed \(e.extensionID.prefix(8)): shared, from every profile")
+            return
+        }
+        var uninstalled = false
+        if let folder = ExtensionRemoval.engineProfile(menuProfile: profile, installedIn: e.profiles) {
+            if CraCEFRuntime.responds(to: #selector(CraCEFRuntime.uninstallExtension(_:profilePath:))) {
+                uninstalled = CraCEFRuntime.uninstallExtension(e.extensionID, profilePath: ExtensionStore.profilePath(folder))
+            } else if let page = page(), page.responds(to: #selector(CraBrowser.uninstallExtension(_:))) {
+                uninstalled = page.uninstallExtension(e.extensionID)   // CEF: one profile
+            }
+        }
+        if !e.managedByChrome { ExtensionStore.shared.remove(e) }
+        CraLog.note("extension removed \(e.extensionID.prefix(8)): engine=\(uninstalled ? 1 : 0) folder=\(e.managedByChrome ? 0 : 1) profile=\(profile)")
+    }
+
     static func iconMenu(for e: ExtensionStore.Entry) -> NSMenu {
         let store = ExtensionStore.shared
         let id = e.extensionID

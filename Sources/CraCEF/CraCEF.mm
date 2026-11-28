@@ -1962,10 +1962,10 @@ public:
         FinishAgentPermission();
         CraBrowser* o = owner_;
         if (!o || !frame->IsMain()) return false;
-        // The boost gallery's Open in Cra (cra-boost:) in a same-tab link: Cra asks about the boost
+        // The boost gallery's and a shared easel's Open in Cra (cra-boost:, cra-easel:) in a same-tab link: Cra asks about the boost
         // itself (BoostInstall) instead of Chrome's "Open Cra?" handing it to whichever Cra macOS picks.
         std::string target = request->GetURL().ToString();
-        if (g_appLinkHandler && target.compare(0, 10, "cra-boost:") == 0) {
+        if (g_appLinkHandler && (target.compare(0, 10, "cra-boost:") == 0 || target.compare(0, 10, "cra-easel:") == 0)) {
             g_appLinkHandler(o, NSStringFromCef(request->GetURL()), user_gesture && !is_redirect);
             return true;
         }
@@ -3402,6 +3402,14 @@ static NSView* FindRenderWidgetHostView(NSView* root) {
     }
 }
 - (void)print { if (_browser) _browser->GetHost()->Print(); }
+// Extension shortcuts' own commands are the engine's (#701); CEF builds don't deliver them.
+- (BOOL)runExtensionCommand:(NSString*)command extension:(NSString*)extensionID { return NO; }
+- (NSArray<NSDictionary<NSString*, id>*>*)extensionActionMenuItems:(NSString*)extensionID { return @[]; }
+- (BOOL)runExtensionMenuItem:(NSString*)itemID extension:(NSString*)extensionID { return NO; }
+- (NSDictionary<NSString*, id>*)extensionSiteAccess:(NSString*)extensionID { return nil; }
+- (BOOL)setExtensionSiteAccess:(NSString*)access extension:(NSString*)extensionID { return NO; }
+- (BOOL)uninstallExtension:(NSString*)extensionID { return NO; }
+- (void)allowAppLinkScheme:(NSString*)scheme fromOrigin:(NSString*)origin {}
 - (BOOL)runChromeCommand:(NSString*)name {
     if (!_browser) return NO;
     int command = cef_id_for_command_id_name(name.UTF8String);
@@ -3645,6 +3653,9 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 + (BOOL)chromeHosting { return g_chromeHosting; }
 + (BOOL)supportsSparePages { return g_chromeHosting; }
 
+// CEF uses the native domain filter.
++ (void)setBundledNetworkRulesExpected:(BOOL)expected {}
++ (void)synchronizeBundledNetworkFilter {}
 + (void)setContentBlockingEnabled:(BOOL)enabled { cra_blocker::Enabled().store(enabled); }
 + (BOOL)contentBlockingEnabled { return cra_blocker::Enabled().load(); }
 
@@ -3685,6 +3696,12 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     }
     if (g_incognitoContext && g_incognitoReady) ApplyFingerprintingProtection(g_incognitoContext);
 }
++ (void)setContentBlockingPausedHosts:(NSArray<NSString*>*)hosts {
+    cra_blocker::DomainSet paused;
+    for (NSString* host in hosts) paused.insert(host.UTF8String ?: "");
+    cra_blocker::SetPausedHosts(std::move(paused));
+}
+
 + (void)setBlockedDomains:(NSArray<NSString*>*)domains {
     auto* set = new cra_blocker::DomainSet();
     set->reserve(domains.count);
@@ -3787,6 +3804,9 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     g_extensionTabHandler = [handler copy];
 }
 + (void)setAppLinkHandler:(BOOL (^)(CraBrowser*, NSString*, BOOL))handler { g_appLinkHandler = [handler copy]; }
++ (NSString*)appLinkInitiatingOrigin { return nil; }
++ (BOOL)appLinkOriginIsRememberable { return NO; }
++ (BOOL)appLinkAllowedWithoutAsking { return NO; }
 + (void)setViewSourceHandler:(void (^)(CraBrowser*, NSString*))handler { g_viewSourceHandler = [handler copy]; }
 + (BOOL)runNextPageMenuCommand:(NSString*)name {
     int command = cef_id_for_command_id_name(name.UTF8String);
@@ -3820,11 +3840,14 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 }
 + (void)setPageHostBrowserViewsHidden:(BOOL)hidden {
 }
++ (void)reuseRendererInsideExitNotice {
+}
 + (NSString*)pageWindowsReadout {
     return [NSString stringWithFormat:@"shown=%ld away=%ld animated=%ld", (long)g_pageWindowsShown, (long)g_pageWindowsShownAway,
                                       (long)g_pageWindowsShownAnimated];
 }
 
++ (void)setEnabledFeatures:(NSArray<NSString*>*)features {}
 + (void)runMessageLoop { CefRunMessageLoop(); }
 + (void)whenReady:(void (^)(void))block { block(); }
 + (void)quitMessageLoop { CraQuitMessageLoop(); }
@@ -3861,6 +3884,15 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 + (void)setBrowserDevToolsEventHandler:(void (^)(NSString*, NSString*, NSString* _Nullable))handler {
     g_cdpEventHandler = [handler copy];
 }
+// Shared extensions (GitHub discussion #595) need Chrome's management policy, which CEF's runtime doesn't reach.
++ (void)setManagedExtensionIDs:(NSDictionary<NSString*, NSArray<NSString*>*>*)idsByProfile {}
++ (void)installWebStoreExtension:(NSString*)extensionID manifest:(NSString*)manifestJSON
+                     profilePath:(NSString*)profilePath completion:(void (^)(NSString*))completion {
+    completion(@"not on CEF");
+}
++ (BOOL)uninstallExtension:(NSString*)extensionID profilePath:(NSString*)profilePath { return NO; }
++ (void)setSharedExtensionStorage:(NSDictionary<NSString*, NSDictionary<NSString*, id>*>*)homes {}
++ (BOOL)setExtensionEnabled:(NSString*)extensionID enabled:(BOOL)enabled profilePath:(NSString*)profilePath { return NO; }
 + (NSString*)extensionSettingsForProfile:(NSString*)profilePath {
     // Quitting: the contexts are going away, and ProfileContext would make a new one.
     if (!g_contextInitialized || g_quitting) return nil;
@@ -3906,6 +3938,14 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
         return NO;
     }
     return YES;
+}
+// Searching the profile's Chromium history is the engine's (#730); CEF builds find nothing there.
++ (void)searchHistory:(NSString*)text profilePath:(NSString*)profilePath maxCount:(NSInteger)maxCount
+           completion:(void (^)(NSArray<NSDictionary<NSString*, id>*>*))completion {
+    completion(@[]);
+}
++ (BOOL)deleteHistoryURL:(NSString*)url profilePath:(NSString*)profilePath {
+    return NO;
 }
 + (NSInteger)loadStateOfProfile:(NSString*)profilePath {
     if (!profilePath.length) return g_contextInitialized ? 2 : 1;

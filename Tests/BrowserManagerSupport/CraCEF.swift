@@ -37,6 +37,8 @@ public enum CraCEFRuntime {
 /// `open`: the app subclasses it (WebKitBrowser, faked in AppServices.swift).
 @MainActor
 open class CraBrowser {
+    /// The canvas before a page's first frame (the real bridge: black while websites are dark); white here.
+    public class var pageCanvasColor: NSColor { .white }
     public weak var delegate: CraBrowserDelegate?
     public let containerView: NSView
     public var hostWindow: NSWindow?
@@ -140,10 +142,18 @@ open class CraBrowser {
     /// Scripts run in the page's own world (a Boost's JavaScript), in order.
     public private(set) var scripts: [String] = []
     public func executeJavaScript(_ script: String) { scripts.append(script) }
+    /// Scripts run in the page's DevTools frontend, in order.
+    public private(set) var devToolsScripts: [String] = []
+    public func executeJavaScript(_ script: String, inDevTools: Bool) {
+        if inDevTools { devToolsScripts.append(script) } else { scripts.append(script) }
+    }
     public private(set) var lastIsolatedParams = ""
+    /// Every isolated-world evaluation's params, in order.
+    public private(set) var isolatedParams: [String] = []
     /// Recorded as "<world>:Runtime.evaluate".
     public func evaluate(inIsolatedWorld world: String, params: String, completion: @escaping (String?, String?) -> Void) {
         lastIsolatedParams = params
+        isolatedParams.append(params)
         replies.append(("\(world):Runtime.evaluate", completion))
     }
     public var guardedEvaluations: [() -> Bool] = []
@@ -155,6 +165,7 @@ open class CraBrowser {
             return true
         }
     }
+    public func hasPending(_ method: String) -> Bool { replies.contains { $0.method == method } }
     public func reply(to method: String, with result: String?) {
         guard let index = replies.firstIndex(where: { $0.method == method }) else { fatalError("No pending \(method)") }
         replies.remove(at: index).completion(result, nil)

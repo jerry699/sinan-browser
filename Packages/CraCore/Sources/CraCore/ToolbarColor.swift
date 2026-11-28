@@ -12,6 +12,28 @@ public enum ToolbarColor {
     public static func hex(reported: String?, remembered: String?) -> String? {
         [reported, remembered].lazy.compactMap { $0 }.first { HexColor.components($0) != nil }
     }
+
+    /// Whether a bar of this colour (nil: white) is light: dark ink on it, and a dark hover.
+    public static func isLight(hex: String?) -> Bool {
+        (hex.flatMap(HexColor.luminance) ?? 1) > 0.6
+    }
+
+    /// A grey and its opacity.
+    public struct Fill: Equatable, Sendable {
+        public var white: Double
+        public var alpha: Double
+        public init(white: Double, alpha: Double) {
+            self.white = white
+            self.alpha = alpha
+        }
+    }
+
+    /// The fill under the button the pointer is over (GitHub #694): white 10 % on a dark bar; on a
+    /// light one, where white didn't show, black 5 %: Arc's toolbar ↻ hover on a white bar measured 242/255
+    /// (live Arc 1.174, 23 Nov 2026).
+    public static func hover(light: Bool) -> Fill {
+        light ? Fill(white: 0, alpha: 0.05) : Fill(white: 1, alpha: 0.1)
+    }
 }
 
 /// The colour a tab's toolbar takes from its page (Arc 1.173.1, measured on local pages for #629):
@@ -23,6 +45,21 @@ public enum ToolbarSample {
     /// The patch, in points from the top-right corner: a 24-point band fills it, a 2-point line
     /// over another colour only tints it (Arc: mostly the colour below, some of the line's).
     public static let width = 2.0, height = 12.0
+
+    /// Until a page's first frame its view shows Arc's canvas (black while websites are dark, white while light;
+    /// engine 159.0.8154.13-16), and the load-end capture can land before that frame: a white page under dark
+    /// websites read black and kept a black bar until a reload. A reading of exactly the canvas is taken again
+    /// while the page's own background (root/body, reported by the engine; nil or "" before it has one) says it
+    /// isn't the canvas colour; a page whose background is that colour keeps the reading at once.
+    public static func readsOnlyTheCanvas(reading: String, canvas: String, background: String?) -> Bool {
+        guard reading.caseInsensitiveCompare(canvas) == .orderedSame else { return false }
+        guard let background, !background.isEmpty else { return true }
+        return background.caseInsensitiveCompare(canvas) != .orderedSame
+    }
+
+    /// How many more readings, and how far apart (seconds), before the canvas colour is taken as the page's: a page
+    /// that is the canvas colour at its top over another background still gets its bar within a second.
+    public static let canvasRetries = 4, canvasRetryDelay = 0.25
 
     /// A rectangle of a capture, in pixels from its top-left.
     public struct Patch: Equatable, Sendable {

@@ -4,14 +4,35 @@ import SwiftUI
 /// Arc's Max pane (Arc 1.171, Settings ▸ Max): one card, a row per feature with a picture in a
 /// white frame, its name, what it does and a switch, and a line under the card about where the
 /// data goes. Cra's features run on the Mac's own Apple Intelligence model, so that line says
-/// nothing leaves the Mac, or, while Apple Intelligence can't run, why and how to turn it on.
+/// the model sends nothing (and, with Instant Links on, that its searches go to the search engine),
+/// or, while Apple Intelligence can't run, why and how to turn it on. The 中国版 cards below the
+/// feature card are the fork's: an own provider, the local model and the memory they learn.
 struct MaxPane: View {
     @Environment(SidebarStore.self) private var store
     private var service: TidyTabsService { TidyTabsService.shared }
+    /// Max's mark in Arc's tile: Apple's, or sparkles before macOS 15.1.
+    static var glyph: String { SettingsTab.max.symbol }
     private var downloader: ModelDownloader { .shared }
     @State private var pending: PendingModelAction?
 
     /// A download or delete the user confirmed in an alert.
+    private struct PendingModelAction: Identifiable {
+        enum Kind { case download, delete }
+        let model: LocalModel
+        let kind: Kind
+        var id: String { "\(kind)-\(model.id)" }
+        var title: String {
+            kind == .download ? L10n.tr("Download %@?", model.name) : L10n.tr("Delete %@?", model.name)
+        }
+        func message(source: String) -> String {
+            switch kind {
+            case .download:
+                return L10n.tr("%@ from %@. It runs on this Mac; nothing is sent anywhere.", MaxPane.bytes(model.bytes), source)
+            case .delete:
+                return L10n.tr("The %@ file is removed. Tidy turns off until a model is downloaded again.", MaxPane.bytes(model.bytes))
+            }
+        }
+    }
 
     /// P5 用户记忆: what the tidy learned, viewable and clearable (数据治理 — memory must
     /// never silently accumulate). Extracted from the body: Swift 6.2 type-checks the
@@ -63,26 +84,10 @@ struct MaxPane: View {
         }
     }
 
-    private struct PendingModelAction: Identifiable {
-        enum Kind { case download, delete }
-        let model: LocalModel
-        let kind: Kind
-        var id: String { "\(kind)-\(model.id)" }
-        var title: String {
-            kind == .download ? L10n.tr("Download %@?", model.name) : L10n.tr("Delete %@?", model.name)
-        }
-        func message(source: String) -> String {
-            switch kind {
-            case .download:
-                return L10n.tr("%@ from %@. It runs on this Mac; nothing is sent anywhere.", MaxPane.bytes(model.bytes), source)
-            case .delete:
-                return L10n.tr("The %@ file is removed. Tidy turns off until a model is downloaded again.", MaxPane.bytes(model.bytes))
-            }
-        }
-    }
-
     var body: some View {
         @Bindable var store = store
+        // Fork: the local model and the member's own provider also run Tidy, not just Apple
+        // Intelligence — upstream's `available` alone would grey the rows out on our setups.
         let ms = service.maxStatus
         let available = ms == .available || ms == .remote
         // The local model always runs Tidy Tab Titles; its Tabs need the 2B.
@@ -91,177 +96,240 @@ struct MaxPane: View {
         // Downloads run locally on the 1.7B (the 0.8B can't): same gate as Tabs.
         let downloadsAvailable = available || (ms == .local && MaxLocal.canTidyTabs)
         let sourceLabel = ModelDownloader.preferredSource.label
-        SettingsCardPane {
-            // ─────────────────────────────────────────────────────────────
-            // 中国版（fork）内容区开始：下面到 "Download from" 行为止的卡片是
-            // fork 的功能（provider/本地模型/自动整理/用户记忆/蒸馏笔记/数据治理），
-            // 上游不存在。上游若重设计 MaxPane，恢复这段 + userMemoryRow() 调用即可。
-            // 逻辑本体在 Sources/Cra/Services/{MaxLocal,MaxProvider,MediaDistill,
-            // EmbeddingService}.swift 与 ChinaFeatures.swift。
-            // ─────────────────────────────────────────────────────────────
-            MaxCard {
-                SettingsCardRow {
-                    Text(L10n.tr("Model provider")).font(.system(size: 13))
-                } trailing: {
-                    Picker(L10n.tr("Model provider"), selection: Binding(get: { MaxRemote.provider },
-                                                                         set: { MaxRemote.setProvider($0); service.refresh() })) {
-                        Text(L10n.tr("Apple Intelligence")).tag(MaxRemote.Provider.off)
-                        Text(L10n.tr("DeepSeek")).tag(MaxRemote.Provider.deepseek)
-                        Text(L10n.tr("Qwen")).tag(MaxRemote.Provider.qwen)
-                        Text(L10n.tr("GLM")).tag(MaxRemote.Provider.glm)
-                        Text(L10n.tr("Custom")).tag(MaxRemote.Provider.custom)
-                    }
-                    .labelsHidden().fixedSize()
-                }
-                if MaxRemote.provider != .off {
-                    SettingsCardDivider()
-                    SettingsCardRow {
-                        Text(L10n.tr("API address")).font(.system(size: 13))
-                    } trailing: {
-                        TextField("https://…", text: Binding(get: { MaxRemote.baseURL },
-                                                             set: { MaxRemote.setBaseURL($0); service.refresh() }))
-                            .textFieldStyle(.roundedBorder).frame(width: 230)
-                    }
-                    SettingsCardDivider()
-                    SettingsCardRow {
-                        Text(L10n.tr("API key")).font(.system(size: 13))
-                    } trailing: {
-                        SecureField("sk-…", text: Binding(get: { MaxRemote.key() ?? "" },
-                                                          set: { MaxRemote.setKey($0); service.refresh() }))
-                            .textFieldStyle(.roundedBorder).frame(width: 230)
-                    }
-                    SettingsCardDivider()
-                    SettingsCardRow {
-                        Text(L10n.tr("Model")).font(.system(size: 13))
-                    } trailing: {
-                        TextField("model", text: Binding(get: { MaxRemote.model },
-                                                         set: { MaxRemote.setModel($0); service.refresh() }))
-                            .textFieldStyle(.roundedBorder).frame(width: 230)
-                    }
-                }
-            }
-            .padding(.bottom, 14)
-            MaxCard {
-                SettingsCardRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("Local model")).font(.system(size: 13))
-                        Text(MaxLocal.isInstalled
-                             ? L10n.tr("Runs Tidy on this Mac; nothing is sent anywhere.")
-                             : L10n.tr("Download one to run Tidy on this Mac; nothing is sent anywhere."))
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } trailing: {
-                    Toggle(L10n.tr("Local model"), isOn: Binding(get: { MaxLocal.isEnabled },
-                                                        set: { MaxLocal.setEnabled($0); service.refresh() }))
-                        .toggleStyle(.switch).labelsHidden().disabled(!MaxLocal.isInstalled)
-                }
-                SettingsCardDivider()
-                SettingsCardRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("Auto-tidy Today")).font(.system(size: 13))
-                        Text(L10n.tr("Runs Tidy on its own when Today fills up.")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                } trailing: {
-                    Toggle(L10n.tr("Auto-tidy Today"), isOn: Binding(get: { TidyTabsService.autoTidyEnabled },
-                                                            set: { TidyTabsService.setAutoTidyEnabled($0) }))
-                        .toggleStyle(.switch).labelsHidden()
-                }
-                SettingsCardDivider()
-                userMemoryRow()
-                SettingsCardDivider()
-                SettingsCardRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("Distill notes")).font(.system(size: 13))
-                        Text(L10n.tr("Notes from 蒸馏音视频 land here as Markdown."))
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(MediaDistillService.notesDirectory.path)
-                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                } trailing: {
-                    Button(L10n.tr("Choose…")) {
-                        let picker = NSOpenPanel()
-                        picker.canChooseDirectories = true
-                        picker.canChooseFiles = false
-                        picker.canCreateDirectories = true
-                        picker.directoryURL = MediaDistillService.notesDirectory
-                        picker.message = L10n.tr("Choose the folder distilled notes land in (e.g. an Obsidian vault)")
-                        if picker.runModal() == .OK, let url = picker.url {
-                            UserDefaults.standard.set(url.path, forKey: "notesDirectory")
+        let features = [store.settings.tidyTabs, store.settings.tidyTabTitles, store.settings.tidyDownloads, store.settings.fiveSecondPreviews, store.settings.askOnPage, store.settings.instantLinks, store.settings.chatGPTInCommandBar]
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+                MaxBanner()
+                VStack(alignment: .leading, spacing: 0) {
+                    SettingsBlurb(L10n.tr("Let Cra do more for you with Max, so you can do less. Power up your browsing with Apple Intelligence on this Mac and spend time on the things that matter — on or off screen."))
+                        .padding(.top, 20)
+                    // Arc's "Enable Max" with its button: Turn On All / Turn On Max / Turn Off Max, by how many are on.
+                    SettingsCard {
+                        SettingsCardRow {
+                            HStack(spacing: 10) {
+                                Image(systemName: MaxPane.glyph).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                                    .frame(width: 24, height: 24)
+                                    .background(RoundedRectangle(cornerRadius: 5.5, style: .continuous).fill(Color(.sRGB, red: 0.22, green: 0.24, blue: 1)))
+                                Text(L10n.tr("Enable Max")).font(.system(size: 13))
+                            }
+                        } trailing: {
+                            let on = MaxMasterSwitch.pressTurnsOn(features)
+                            Button(L10n.tr(MaxMasterSwitch.title(features))) {
+                                store.settings.tidyTabs = on
+                                store.settings.tidyTabTitles = on
+                                store.settings.tidyDownloads = on
+                                store.settings.fiveSecondPreviews = on
+                                store.settings.askOnPage = on
+                                store.settings.instantLinks = on
+                                store.settings.chatGPTInCommandBar = on
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(MaxMasterSwitch.isEmphasised(features) ? Color(.sRGB, red: 0.2, green: 0.22, blue: 0.98) : .gray)
+                            .disabled(!available)
                         }
                     }
-                    .controlSize(.small)
-                }
-                SettingsCardDivider()
-                SettingsCardRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("Local AI data")).font(.system(size: 13))
-                        Text("语义索引是缓存：清除后从浏览历史自动重建（约 20 秒）。迁移电脑时备份历史与分类记忆即可，模型可重新下载。")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(String(format: "语义索引 %.1f MB（%d 页）", Double(EmbeddingService.shared.indexFileSize) / 1_048_576, EmbeddingService.shared.documentCount))
-                            .font(.system(size: 10)).foregroundStyle(.tertiary)
-                    }
-                } trailing: {
-                    Button("清除重建") {
-                        EmbeddingService.shared.clearIndex()
-                    }
-                    .controlSize(.small)
-                }
-
-                ForEach(ModelCatalog.all) { model in
-                    SettingsCardDivider()
-                    SettingsCardRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(model.name).font(.system(size: 13))
-                            Text(localModelNote(model))
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 20)
+                    SettingsFeatureCard {
+                        // Arc's first Max row (MaxSettingsUnit.askOnPage), with its text.
+                        SettingsSwitchRow(L10n.tr("Ask on Page"),
+                                          detail: L10n.tr("Press Command + F on any page to ask a question and let Max answer it for you in seconds."),
+                                          isOn: $store.settings.askOnPage, enabled: available) {
+                            AskOnPagePicture()
                         }
-                    } trailing: {
-                        localModelAction(model)
+                        SettingsCardDivider()
+                        SettingsSwitchRow(L10n.tr("Tidy Tabs"),
+                                          detail: Text("\(L10n.tr("Press the")) \(Image(nsImage: BroomGlyph.image).renderingMode(.template)) \(L10n.tr("icon to let your Sidebar organize itself whenever you have six or more Today Tabs."))"),
+                                          isOn: $store.settings.tidyTabs, enabled: tabsAvailable) {
+                            TidyTabsPicture()
+                        }
+                        SettingsCardDivider()
+                        // Arc 1.172's order: Instant Links comes right after Tidy Tabs.
+                        SettingsSwitchRow(L10n.tr(InstantLinks.settingsTitle), detail: L10n.tr(InstantLinks.settingsDetail),
+                                          isOn: $store.settings.instantLinks, enabled: available) {
+                            InstantLinksPicture()
+                        }
+                        SettingsCardDivider()
+                        SettingsSwitchRow(L10n.tr("Tidy Tab Titles"),
+                                          detail: L10n.tr("Have your tabs automatically renamed with tidier, shorter titles when you Pin them."),
+                                          isOn: $store.settings.tidyTabTitles, enabled: titlesAvailable) {
+                            TidyTabTitlesPicture()
+                        }
+                        SettingsCardDivider()
+                        SettingsSwitchRow(L10n.tr("Tidy Downloads"),
+                                          detail: L10n.tr("Keep your many files more organized with smartly renamed downloads — and make them a little easier to find later."),
+                                          isOn: $store.settings.tidyDownloads, enabled: downloadsAvailable) {
+                            TidyDownloadsPicture()
+                        }
+                        SettingsCardDivider()
+                        SettingsSwitchRow(L10n.tr("5-Second Previews"),
+                                          detail: L10n.tr("Instant summaries appear when you hover over links on certain websites (Google results, X and Hacker News). Or hold Shift while hovering to preview any link."),
+                                          isOn: $store.settings.fiveSecondPreviews, enabled: available) {
+                            FiveSecondPreviewsPicture()
+                        }
+                        SettingsCardDivider()
+                        // Arc's last Max row (gptSiteSearchEnabled, #828). It needs no Apple Intelligence: the message goes
+                        // to chatgpt.com as a page.
+                        SettingsSwitchRow(L10n.tr(ChatGPTCommandBar.settingsTitle),
+                                          detail: ChatGPTCommandBar.settingsDetail(shortcut: KeyBindingRegistry.shared.action(ChatGPTCommandBar.actionID)?.primary?.display),
+                                          isOn: $store.settings.chatGPTInCommandBar, enabled: true) {
+                            ChatGPTPicture()
+                        }
                     }
+                    .padding(.top, 9)
+                    // ─────────────────────────────────────────────────────────────
+                    // 中国版（fork）内容区开始：下面到 "Download from" 行为止的两张卡片是
+                    // fork 的功能（provider/本地模型/自动整理/用户记忆/蒸馏笔记/数据治理），
+                    // 上游不存在。上游若重设计 MaxPane，恢复这段 + userMemoryRow() 调用即可。
+                    // 逻辑本体在 Sources/Cra/Services/{MaxLocal,MaxProvider,MediaDistill,
+                    // EmbeddingService}.swift 与 ChinaFeatures.swift。
+                    // ─────────────────────────────────────────────────────────────
+                    MaxCard {
+                        SettingsCardRow {
+                            Text(L10n.tr("Model provider")).font(.system(size: 13))
+                        } trailing: {
+                            Picker(L10n.tr("Model provider"), selection: Binding(get: { MaxRemote.provider },
+                                                                                 set: { MaxRemote.setProvider($0); service.refresh() })) {
+                                Text(L10n.tr("Apple Intelligence")).tag(MaxRemote.Provider.off)
+                                Text(L10n.tr("DeepSeek")).tag(MaxRemote.Provider.deepseek)
+                                Text(L10n.tr("Qwen")).tag(MaxRemote.Provider.qwen)
+                                Text(L10n.tr("GLM")).tag(MaxRemote.Provider.glm)
+                                Text(L10n.tr("Custom")).tag(MaxRemote.Provider.custom)
+                            }
+                            .labelsHidden().fixedSize()
+                        }
+                        if MaxRemote.provider != .off {
+                            SettingsCardDivider()
+                            SettingsCardRow {
+                                Text(L10n.tr("API address")).font(.system(size: 13))
+                            } trailing: {
+                                TextField("https://…", text: Binding(get: { MaxRemote.baseURL },
+                                                                     set: { MaxRemote.setBaseURL($0); service.refresh() }))
+                                    .textFieldStyle(.roundedBorder).frame(width: 230)
+                            }
+                            SettingsCardDivider()
+                            SettingsCardRow {
+                                Text(L10n.tr("API key")).font(.system(size: 13))
+                            } trailing: {
+                                SecureField("sk-…", text: Binding(get: { MaxRemote.key() ?? "" },
+                                                                  set: { MaxRemote.setKey($0); service.refresh() }))
+                                    .textFieldStyle(.roundedBorder).frame(width: 230)
+                            }
+                            SettingsCardDivider()
+                            SettingsCardRow {
+                                Text(L10n.tr("Model")).font(.system(size: 13))
+                            } trailing: {
+                                TextField("model", text: Binding(get: { MaxRemote.model },
+                                                                 set: { MaxRemote.setModel($0); service.refresh() }))
+                                    .textFieldStyle(.roundedBorder).frame(width: 230)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 14)
+                    MaxCard {
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("Local model")).font(.system(size: 13))
+                                Text(MaxLocal.isInstalled
+                                     ? L10n.tr("Runs Tidy on this Mac; nothing is sent anywhere.")
+                                     : L10n.tr("Download one to run Tidy on this Mac; nothing is sent anywhere."))
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } trailing: {
+                            Toggle(L10n.tr("Local model"), isOn: Binding(get: { MaxLocal.isEnabled },
+                                                                set: { MaxLocal.setEnabled($0); service.refresh() }))
+                                .toggleStyle(.switch).labelsHidden().disabled(!MaxLocal.isInstalled)
+                        }
+                        SettingsCardDivider()
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("Auto-tidy Today")).font(.system(size: 13))
+                                Text(L10n.tr("Runs Tidy on its own when Today fills up.")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        } trailing: {
+                            Toggle(L10n.tr("Auto-tidy Today"), isOn: Binding(get: { TidyTabsService.autoTidyEnabled },
+                                                                    set: { TidyTabsService.setAutoTidyEnabled($0) }))
+                                .toggleStyle(.switch).labelsHidden()
+                        }
+                        SettingsCardDivider()
+                        userMemoryRow()
+                        SettingsCardDivider()
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("Distill notes")).font(.system(size: 13))
+                                Text(L10n.tr("Notes from 蒸馏音视频 land here as Markdown."))
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(MediaDistillService.notesDirectory.path)
+                                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                        } trailing: {
+                            Button(L10n.tr("Choose…")) {
+                                let picker = NSOpenPanel()
+                                picker.canChooseDirectories = true
+                                picker.canChooseFiles = false
+                                picker.canCreateDirectories = true
+                                picker.directoryURL = MediaDistillService.notesDirectory
+                                picker.message = L10n.tr("Choose the folder distilled notes land in (e.g. an Obsidian vault)")
+                                if picker.runModal() == .OK, let url = picker.url {
+                                    UserDefaults.standard.set(url.path, forKey: "notesDirectory")
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+                        SettingsCardDivider()
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("Local AI data")).font(.system(size: 13))
+                                Text("语义索引是缓存：清除后从浏览历史自动重建（约 20 秒）。迁移电脑时备份历史与分类记忆即可，模型可重新下载。")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(String(format: "语义索引 %.1f MB（%d 页）", Double(EmbeddingService.shared.indexFileSize) / 1_048_576, EmbeddingService.shared.documentCount))
+                                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                            }
+                        } trailing: {
+                            Button("清除重建") {
+                                EmbeddingService.shared.clearIndex()
+                            }
+                            .controlSize(.small)
+                        }
+                        ForEach(ModelCatalog.all) { model in
+                            SettingsCardDivider()
+                            SettingsCardRow {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(model.name).font(.system(size: 13))
+                                    Text(localModelNote(model))
+                                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            } trailing: {
+                                localModelAction(model)
+                            }
+                        }
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("Download from")).font(.system(size: 13))
+                                Text(L10n.tr("Both sites serve the same file; Cra checks its SHA256 before using it."))
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } trailing: {
+                            Picker(L10n.tr("Download from"), selection: Binding(get: { ModelDownloader.preferredSource },
+                                                                                set: { ModelDownloader.preferredSource = $0 })) {
+                                ForEach(ModelSource.allCases) { Text(L10n.tr($0.label)).tag($0) }
+                            }
+                            .labelsHidden().fixedSize()
+                        }
+                    }
+                    MaxFooter(status: service.maxStatus, instantLinks: store.settings.instantLinks, chatGPT: store.settings.chatGPTInCommandBar) { service.openSystemSettings() }
+                        .padding(.top, 14)
                 }
-                SettingsCardRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("Download from")).font(.system(size: 13))
-                        Text(L10n.tr("Both sites serve the same file; Cra checks its SHA256 before using it."))
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } trailing: {
-                    Picker(L10n.tr("Download from"), selection: Binding(get: { ModelDownloader.preferredSource },
-                                                                        set: { ModelDownloader.preferredSource = $0 })) {
-                        ForEach(ModelSource.allCases) { Text(L10n.tr($0.label)).tag($0) }
-                    }
-                    .labelsHidden().fixedSize()
-                }
+                .padding(.horizontal, SettingsMetrics.paneInset)
+                .padding(.bottom, SettingsMetrics.paneBottom)
             }
-            .padding(.bottom, 14)
-            MaxCard {
-                MaxFeatureRow(title: L10n.tr("Tidy Tabs"), isOn: $store.settings.tidyTabs, enabled: tabsAvailable) {
-                    TidyTabsPicture()
-                } description: {
-                    Text("\(L10n.tr("Press the")) \(Image(nsImage: BroomGlyph.image).renderingMode(.template)) \(L10n.tr("icon to let your Sidebar organize itself whenever you have six or more Today Tabs."))")
-                }
-                SettingsCardDivider()
-                MaxFeatureRow(title: L10n.tr("Tidy Tab Titles"), isOn: $store.settings.tidyTabTitles, enabled: titlesAvailable) {
-                    TidyTabTitlesPicture()
-                } description: {
-                    Text(L10n.tr("Have your tabs automatically renamed with tidier, shorter titles when you Pin them."))
-                }
-                SettingsCardDivider()
-                MaxFeatureRow(title: L10n.tr("Tidy Downloads"), isOn: $store.settings.tidyDownloads, enabled: downloadsAvailable) {
-                    TidyDownloadsPicture()
-                } description: {
-                    Text(L10n.tr("Keep your many files more organized with smartly renamed downloads — and make them a little easier to find later."))
-                }
-            }
-            MaxFooter(status: service.maxStatus) { service.openSystemSettings() }
-                .padding(.top, 14)
         }
+        .scrollIndicators(.automatic)
         .alert(pending?.title ?? "", isPresented: Binding(get: { pending != nil },
                                                           set: { if !$0 { pending = nil } }), presenting: pending) { action in
             switch action.kind {
@@ -278,7 +346,7 @@ struct MaxPane: View {
             Text(action.message(source: sourceLabel))
         }
         // Coming back from System Settings brings Cra to the front, which reads the status again;
-        // a finished download gets there without that.
+        // a model still downloading gets there without that.
         .task {
             CraLog.note(String(format: "Max pane: provider=%@, baseURL=%d chars, model=%d chars, key=%d chars, configured=%d",
                                MaxRemote.provider.rawValue, MaxRemote.baseURL.count, MaxRemote.model.count,
@@ -333,7 +401,7 @@ struct MaxPane: View {
     }
 }
 
-/// The card around Max's rows: a hairline border on a lighter fill, rows split by hairlines.
+/// The card around the fork's Max rows: a hairline border on a lighter fill, rows split by hairlines.
 struct MaxCard<Content: View>: View {
     @ViewBuilder let content: Content
     @Environment(\.colorScheme) private var scheme
@@ -348,49 +416,12 @@ struct MaxCard<Content: View>: View {
     }
 }
 
-/// One Max feature: picture, name over description, switch. Off while Apple Intelligence can't run.
-struct MaxFeatureRow<Picture: View, Description: View>: View {
-    let title: String
-    @Binding var isOn: Bool
-    var enabled = true
-    @ViewBuilder let picture: Picture
-    @ViewBuilder let description: Description
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            MaxPictureFrame { picture }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14))
-                description
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            Toggle(title, isOn: Binding(get: { isOn && enabled }, set: { isOn = $0 }))
-                .toggleStyle(.switch).labelsHidden()
-                .disabled(!enabled)
-        }
-        .padding(10)
-    }
-}
-
-/// Arc frames each picture in white: 3 pt round a tile with 6 pt corners.
-private struct MaxPictureFrame<Content: View>: View {
-    @ViewBuilder let content: Content
-    var body: some View {
-        content
-            .frame(width: 88, height: 56)
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .padding(3)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white))
-            .accessibilityHidden(true)
-    }
-}
-
 /// Under the card, where Arc says Max sends data to its AI partners: what runs where, or why it
 /// can't and the way to System Settings ▸ Apple Intelligence & Siri.
 private struct MaxFooter: View {
     let status: TidyTabsService.MaxStatus
+    let instantLinks: Bool
+    let chatGPT: Bool
     let openSettings: () -> Void
 
     var body: some View {
@@ -399,6 +430,20 @@ private struct MaxFooter: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            // The searches Instant Links makes are the one thing that leaves the Mac.
+            if status == .available, instantLinks {
+                Text(L10n.tr("Instant Links sends what it searches for to your search engine, as a search would."))
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Arc says Max sends data to its AI partners; here only what you ask ChatGPT leaves, to its site.
+            if chatGPT {
+                Text(L10n.tr("ChatGPT in the Command Bar sends what you ask to chatgpt.com, as opening the page would."))
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if status.canOpenSettings {
                 Button(action: openSettings) {
                     Text(L10n.tr("Turn on Apple Intelligence in System Settings")).font(.system(size: 12)).underline()
@@ -407,6 +452,53 @@ private struct MaxFooter: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// ChatGPT in the Command Bar's picture: the bar scoped to ChatGPT, its pill in Arc's #75A99C and "Send a Message…".
+private struct ChatGPTPicture: View {
+    private let teal = Color(red: 0x75 / 255, green: 0xA9 / 255, blue: 0x9C / 255)
+    var body: some View {
+        ZStack {
+            teal.opacity(0.85)
+            HStack(spacing: 3) {
+                Image(systemName: "magnifyingglass").font(.system(size: 4.5, weight: .semibold)).foregroundStyle(Color(white: 0.75))
+                Text("ChatGPT").font(.system(size: 4.5, weight: .bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 3).padding(.vertical, 1.5)
+                    .background(Capsule().fill(teal))
+                Text("Send a Message…").font(.system(size: 4.5, weight: .semibold)).foregroundStyle(Color(white: 0.6)).lineLimit(1).fixedSize()
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 5).padding(.vertical, 5)
+            .frame(width: 72)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color(red: 0.18, green: 0.17, blue: 0.15)))
+        }
+    }
+}
+
+/// Arc's Ask on Page picture (AskOnPagePreview): a find card with its Ask button on pink.
+private struct AskOnPagePicture: View {
+    var body: some View {
+        ZStack {
+            Color(red: 0.96, green: 0.62, blue: 0.62)
+            VStack(alignment: .trailing, spacing: 0) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous).fill(Color.white.opacity(0.9))
+                    .frame(width: 48, height: 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 3) {
+                    RoundedRectangle(cornerRadius: 1).fill(Color(white: 0.85)).frame(width: 30, height: 2)
+                    Spacer(minLength: 0)
+                    Text("Ask").font(.system(size: 4.5, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 4).padding(.vertical, 1.5)
+                        .background(RoundedRectangle(cornerRadius: 2, style: .continuous).fill(Color(red: 0.22, green: 0.24, blue: 1)))
+                }
+                .padding(.horizontal, 4).padding(.vertical, 3)
+                .frame(width: 70)
+                .background(RoundedRectangle(cornerRadius: 3, style: .continuous).fill(Color.white))
+                .padding(.top, 5)
+            }
+            .frame(width: 70)
+        }
     }
 }
 
@@ -479,6 +571,64 @@ private struct TidyTabsPicture: View {
     }
 }
 
+/// Instant Links' picture: the command bar with a search and the ⇧ and ↩ keycaps, on pink.
+private struct InstantLinksPicture: View {
+    var body: some View {
+        ZStack {
+            Color(red: 0.96, green: 0.62, blue: 0.62)
+            HStack(spacing: 3) {
+                Image(systemName: "magnifyingglass").font(.system(size: 5, weight: .medium)).foregroundStyle(Color(white: 0.55))
+                RoundedRectangle(cornerRadius: 1).fill(Color(white: 0.8)).frame(width: 20, height: 2)
+                Spacer(minLength: 0)
+                ForEach(["⇧", "↩"], id: \.self) { key in
+                    Text(key).font(.system(size: 5.5, weight: .semibold)).foregroundStyle(Color(white: 0.35))
+                        .frame(width: 8, height: 8)
+                        .background(RoundedRectangle(cornerRadius: 2, style: .continuous).fill(Color(white: 0.92)))
+                }
+            }
+            .padding(.horizontal, 5)
+            .frame(width: 70, height: 16)
+            .background(Capsule().fill(Color.white))
+        }
+    }
+}
+
+/// Arc's 5-Second Previews picture: a summary card with bullet points on teal.
+private struct FiveSecondPreviewsPicture: View {
+    private let grey = Color(white: 0.55)
+    var body: some View {
+        ZStack {
+            Color(red: 0.10, green: 0.52, blue: 0.50)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 2) {
+                    Image(systemName: "link").font(.system(size: 4)).foregroundStyle(grey)
+                    Text("news.ycombinator.com").font(.system(size: 4.5, weight: .medium)).foregroundStyle(.black).lineLimit(1).fixedSize()
+                    Spacer(minLength: 0)
+                    Image(systemName: "sparkles").font(.system(size: 4)).foregroundStyle(Color(red: 0.55, green: 0.45, blue: 0.90))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 2) {
+                        Circle().fill(grey).frame(width: 1.5, height: 1.5)
+                        RoundedRectangle(cornerRadius: 1).fill(grey.opacity(0.7)).frame(width: 44, height: 2)
+                    }
+                    HStack(spacing: 2) {
+                        Circle().fill(grey).frame(width: 1.5, height: 1.5)
+                        RoundedRectangle(cornerRadius: 1).fill(grey.opacity(0.7)).frame(width: 50, height: 2)
+                    }
+                    HStack(spacing: 2) {
+                        Circle().fill(grey).frame(width: 1.5, height: 1.5)
+                        RoundedRectangle(cornerRadius: 1).fill(grey.opacity(0.7)).frame(width: 34, height: 2)
+                    }
+                }
+                .padding(.top, 1)
+            }
+            .padding(.horizontal, 5).padding(.vertical, 4)
+            .frame(width: 70)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.white))
+        }
+    }
+}
+
 private struct Squiggle: Shape {
     func path(in r: CGRect) -> Path {
         var p = Path()
@@ -488,6 +638,44 @@ private struct Squiggle: Shape {
         while x <= r.width {
             p.addLine(to: CGPoint(x: r.minX + x, y: r.midY + r.height / 2 * sin(2 * .pi * x / period)))
             x += 0.5
+        }
+        return p
+    }
+}
+
+/// Arc's Max picture band (684 × ≈125, blue, some flowers, ending in a wavy edge) with Cra's mark and "Max" in the
+/// middle (Victor, 12 Nov 2026), in the system's rounded face.
+private struct MaxBanner: View {
+    private static let blue = Color(.sRGB, red: 0.2, green: 0.235, blue: 1)
+    private static let pink = Color(.sRGB, red: 1, green: 0.62, blue: 0.62)
+
+    var body: some View {
+        ZStack {
+            Self.blue
+            // Flowers round the edges, some cut by them, clear of the mark and the word.
+            ForEach(Array([(-300, -8, 30.0), (-240, -38, 14.0), (-200, 28, 44.0), (-160, -30, 22.0), (165, 8, 20.0), (210, -30, 30.0), (275, 22, 24.0), (340, -26, 36.0)].enumerated()), id: \.offset) { _, f in
+                Flower().fill(Self.pink).frame(width: f.2, height: f.2).offset(x: CGFloat(f.0), y: CGFloat(f.1))
+            }
+            HStack(spacing: 10) {
+                BrandMark(size: 64)
+                Text("Max").font(.system(size: 52, weight: .black, design: .rounded)).foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.18), radius: 0, x: 2, y: 2)
+            }
+            .offset(y: -3)
+        }
+        .frame(height: 125)
+        .clipShape(SettingsScallopedBand())
+        .accessibilityHidden(true)
+    }
+}
+
+/// A flower of four lobes.
+private struct Flower: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let r = min(rect.width, rect.height) * 0.28
+        for (dx, dy) in [(0.0, -0.5), (0.5, 0.0), (0.0, 0.5), (-0.5, 0.0)] {
+            p.addEllipse(in: CGRect(x: rect.midX + dx * rect.width * 0.55 - r, y: rect.midY + dy * rect.height * 0.55 - r, width: r * 2, height: r * 2))
         }
         return p
     }

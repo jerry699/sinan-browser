@@ -158,17 +158,20 @@ struct AdvancedPane: View {
                             .toggleStyle(.arcSwitch).labelsHidden()
                     }
                     SettingsCardDivider()
+                    // Discussion #862: agents think for seconds between steps.
                     SettingsCardRow {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(L10n.tr("Let agents upload local files")).font(.system(size: 13))
-                            Text(L10n.tr("An agent could hand any file on this Mac (like ~/.ssh/id_rsa) to a web page. Off unless you truly need it."))
+                            Text(L10n.tr("Keep an agent on screen for")).font(.system(size: 13))
+                            Text(L10n.tr("How long the agent’s pill, cursor and face stay after its last step, so they don’t come and go while it thinks."))
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } trailing: {
-                        Toggle(L10n.tr("Let agents upload local files"), isOn: Binding(
-                            get: { MCPServer.shared.allowsUploads }, set: { MCPServer.shared.allowsUploads = $0 }))
-                            .toggleStyle(.arcSwitch).labelsHidden()
-                    }
+                        Picker(L10n.tr("Keep an agent on screen for"), selection: Binding(
+                            get: { MCPServer.shared.linger }, set: { MCPServer.shared.linger = $0 })) {
+                            ForEach(MCPAgentPresence.Linger.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden().fixedSize()                    }
                     ForEach(MCPServer.shared.agents) { agent in
                         SettingsCardDivider()
                         SettingsCardRow {

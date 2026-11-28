@@ -1,6 +1,11 @@
 import AppKit
 import CraCEF
 
+if CommandLine.arguments.dropFirst().first == ChromiumFilterLists.origin { ChromiumFilterLists.watch() }
+// Chromium's DevTools pipe (extension buttons' popups) can only use descriptors 3 and 4: hold them before AppKit
+// or anything else opens a file, and let go just before Chromium starts (#752).
+let pipeDescriptorsAtLaunch = DevToolsPipeDescriptors.reserve()
+
 // A staged update run once before it is installed, so macOS has checked the new bundle by the
 // time the user starts it (UpdatePrewarm). Nothing else of Cra runs.
 if ProcessInfo.processInfo.environment[UpdatePrewarm.environmentKey] == "1" { exit(0) }
@@ -58,7 +63,15 @@ MainActor.assumeIsolated {
     NativeMessagingHosts.link(into: AppPaths.chromiumCache)
 
     let extensions = ExtensionStore.loadList(profileIsFree: profileIsFree)
-    CraCEFRuntime.setExtensionPaths(extensions.paths, profiles: extensions.profiles)
+    var paths = extensions.paths
+    var scopes = extensions.profiles
+    if profileIsFree && EngineFramework.isChromiumEngine {
+        do {
+            paths.append(try ChromiumFilterLists.install())
+            scopes = scopes.map { $0 + ",*" }
+        } catch { CraLog.note("network filter setup failed: " + error.localizedDescription) }
+    }
+    CraCEFRuntime.setExtensionPaths(paths, profiles: scopes)
     if let p = extensions.profiles { CraLog.note("extension profiles: \(p)") }
 
     // Chromium's language follows macOS as in Chrome and Arc: it picks the voice for speech
@@ -68,6 +81,9 @@ MainActor.assumeIsolated {
                                      preferredLanguages: Locale.preferredLanguages)
     CraLog.note("chromium locale: \(locale ?? "en-US (default)") for \(Locale.preferredLanguages.prefix(3).joined(separator: ","))")
     let useChromeStyle = ProcessInfo.processInfo.environment["CRA_CHROME_STYLE"] == "1"
+    // Freed last, right before the pipe is made (in initialize on CEF, as runMessageLoop starts on the engine).
+    let freed = DevToolsPipeDescriptors.release()
+    CraLog.note(DevToolsPipeDescriptors.logLine(found: pipeDescriptorsAtLaunch, freed: freed))
     let started = CraCEFRuntime.initialize(withCachePath: AppPaths.chromiumCache.path,
                                            userAgentProduct: "",
                                            logPath: AppPaths.log.path,
@@ -93,6 +109,7 @@ MainActor.assumeIsolated {
     var ready = false
     CraCEFRuntime.whenReady {
         ready = true
+        ChromiumFilterLists.finishStartupProfileInstall()
         ChromiumBluetoothCache.install()
         ChromiumDockTile.install()
         ChromiumHistorySwipe.install()
@@ -113,6 +130,18 @@ MainActor.assumeIsolated {
         DispatchQueue.main.async { delegate.bootstrapIfNeeded() }
         HitchMonitor.startIfRequested()
     }
+    // Chrome's own window occlusion checker leaves pages white on macOS 27 (#848, ChromiumStartFeatures).
+    let productVersion: String = {
+        var size = 0
+        guard sysctlbyname("kern.osproductversion", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.osproductversion", &bytes, &size, nil, 0) == 0 else { return "" }
+        return String(cString: bytes)
+    }()
+    let macOS = ChromiumStartFeatures.macOSMajor(environment: ProcessInfo.processInfo.environment,
+                                                 actual: ChromiumStartFeatures.major(productVersion: productVersion)
+                                                     ?? ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+    CraCEFRuntime.setEnabledFeatures(ChromiumStartFeatures.enabled(macOSMajor: macOS))
     CraCEFRuntime.runMessageLoop()
     if !ready { didNotStart() }
     PerfRecorder.quit()

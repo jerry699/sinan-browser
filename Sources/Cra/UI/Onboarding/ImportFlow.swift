@@ -24,25 +24,12 @@ struct ImportCategory: Identifiable {
     let symbol: String
     var detail: String
     var state: State = .waiting
+    /// The tile's count of what came over; its skipped items open from the tile.
+    var report: ImportReport?
 }
 
 extension ImportPlan {
-    /// The plan restricted to what the user picked.
-    func selecting(spaces: Set<Int>, favorites: Bool) -> ImportPlan {
-        var p = self
-        p.spaces = spaces.sorted().compactMap { $0 < self.spaces.count ? self.spaces[$0] : nil }
-        if !favorites { p.favorites = [] }
-        return p
-    }
-
     var isEmpty: Bool { spaces.isEmpty && favorites.isEmpty && archive.isEmpty }
-}
-
-extension ImportedSpace {
-    var itemCount: Int {
-        func count(_ items: [ImportedItem]) -> Int { items.reduce(0) { $0 + ($1.isFolder ? count($1.children) : 1) } }
-        return count(pinned) + count(today)
-    }
 }
 
 /// What the app does once the flow ends: focus the first imported space and,
@@ -82,6 +69,8 @@ final class ImportFlowModel {
     private(set) var source: ImportSource?
     private(set) var plan: ImportPlan?
     private(set) var loadError: String?
+    /// Reads the picked browser's plan; a later pick drops an earlier one's.
+    private let planLoader = ImportPlanLoader()
     /// macOS won't let Cra read the picked browser's folder until Cra has Full Disk Access.
     private(set) var needsFullDiskAccess = false
 
@@ -200,10 +189,14 @@ final class ImportFlowModel {
         }
     }
 
-    /// Dia's disclosure step: the ad and tracker blocker checkbox.
-    var blockAdsAndTrackers: Bool {
-        get { store.settings.blockAdsAndTrackers }
-        set { store.settings.blockAdsAndTrackers = newValue }
+    var adAwayEnabled: Bool {
+        get { store.settings.adAwayEnabled }
+        set { store.settings.adAwayEnabled = newValue }
+    }
+
+    var anudeepEnabled: Bool {
+        get { store.settings.anudeepEnabled }
+        set { store.settings.anudeepEnabled = newValue }
     }
 
     /// Dia's disclosure step, its other checkbox ("Help improve Dia by sharing content data"):
@@ -262,14 +255,15 @@ final class ImportFlowModel {
         exportFileName = nil
         exportError = nil
         exportTopSites = []
+        plan = nil
         if s.needsExportedFile || needsFullDiskAccess {
-            plan = nil
+            planLoader.cancel()
         } else {
-            do {
-                setPlan(try s.plan())
-            } catch {
-                plan = nil
-                loadError = error.localizedDescription
+            planLoader.load({ try s.plan() }) { result in
+                switch result {
+                case .success(let p): self.setPlan(p)
+                case .failure(let error): self.loadError = error.localizedDescription
+                }
             }
         }
         credentialProfiles = s.credentialProfiles
@@ -294,7 +288,7 @@ final class ImportFlowModel {
         switch source.kind {
         case .safari: go(.safariExport)
         case .firefox, .zen: go(.passwordsFile)
-        case .arc, .dia, .yab, .ardia, .chromium: credentialProfiles.isEmpty ? goToSpaces() : go(.unlock)
+        case .arc, .dia, .yab, .ardia, .phi, .crest, .chromium: credentialProfiles.isEmpty ? goToSpaces() : go(.unlock)
         }
     }
 
@@ -323,7 +317,7 @@ final class ImportFlowModel {
     func profileNames(of e: ImportableExtension) -> [String]? {
         guard let plan else { return nil }
         var map = ImportProfileMap()
-        var names = ["Default": "Default"]
+        var names = ["Default": store.profileName(nil)]
         for sp in plan.selecting(spaces: selectedSpaces, favorites: false).spaces {
             if let p = sp.profile { map.folders[p.folder] = p.folder; names[p.folder] = p.name } else { map.folders["Default"] = "Default" }
         }
@@ -483,20 +477,21 @@ final class ImportFlowModel {
         let plan = self.plan ?? ImportPlan(source: source?.name ?? "")
         let chosen = withExtensions ? extensions.filter { selectedExtensions.contains($0.id) } : []
         let selection = plan.selecting(spaces: selectedSpaces, favorites: includeFavorites)
+        // A tile with only skips still shows, so a file that could not be read is seen.
+        let expected = selection.report(includeArchive: includeArchive)
         var cats: [ImportCategory] = []
         if !selection.spaces.isEmpty {
             cats.append(ImportCategory(id: "spaces", title: L10n.tr("Spaces"), symbol: "square.stack.fill",
                                        detail: count(selection.spaces.count, "space")))
-            cats.append(ImportCategory(id: "tabs", title: L10n.tr("Tabs & Folders"), symbol: "pin.fill",
-                                       detail: count(selection.spaces.reduce(0) { $0 + $1.itemCount }, "tab")))
         }
-        let favoriteCount = selection.spaces.reduce(selection.favorites.count) { $0 + $1.favorites.count }
-        if favoriteCount > 0 {
-            cats.append(ImportCategory(id: "favorites", title: L10n.tr("Favorites"), symbol: "star.fill", detail: count(favoriteCount, "favorite")))
+        if expected[.tabs].isShown {
+            cats.append(ImportCategory(id: "tabs", title: "Tabs & Folders", symbol: "pin.fill", detail: count(expected[.tabs].copied, "tab")))
         }
-        if includeArchive && !plan.archive.isEmpty {
-            cats.append(ImportCategory(id: "archive", title: L10n.tr("Archive"), symbol: "archivebox.fill", detail: count(plan.archive.count, "tab")))
+        if expected[.favorites].isShown {
+            cats.append(ImportCategory(id: "favorites", title: "Favorites", symbol: "star.fill", detail: count(expected[.favorites].copied, "favorite")))
         }
+        if expected[.archive].isShown {
+            cats.append(ImportCategory(id: "archive", title: "Archive", symbol: "archivebox.fill", detail: count(expected[.archive].copied, "tab")))        }
         if !credentials.logins.isEmpty {
             cats.append(ImportCategory(id: "passwords", title: L10n.tr("Passwords"), symbol: "key.fill", detail: count(credentials.logins.count, "password")))
         }
@@ -513,6 +508,9 @@ final class ImportFlowModel {
         failures = []
         finished = false
         go(.progress)
+        // From now on Cra may read this browser's folder for what follows from the import: its
+        // native messaging manifests (1Password, Bitwarden…) link at once, and at every launch (#757).
+        if let source { NativeMessagingHosts.recordImport(from: source, into: AppPaths.chromiumCache) }
 
         // A fresh install starts with one empty space; once real spaces arrive it only gets in the way.
         let emptyBefore = firstRun && !selection.spaces.isEmpty
@@ -543,7 +541,10 @@ final class ImportFlowModel {
                     categories[i].state = credentialsStaged ? .done : .failed
                 default:
                     if categories[i].id == "spaces" { categories[i].detail = count(result.spaces, "space") }
-                    if categories[i].id == "tabs" { categories[i].detail = count(result.tabs, "new tab") }
+                    if let kind = ["tabs": ImportKind.tabs, "favorites": .favorites, "archive": .archive][categories[i].id] {
+                        categories[i].detail = result.report[kind].summary
+                        categories[i].report = result.report[kind]
+                    }
                     try? await Task.sleep(nanoseconds: 420_000_000)
                     categories[i].state = .done
                 }
@@ -612,11 +613,12 @@ final class ImportFlowModel {
     ]
 
     /// Most visited sites from the browser imported from (Dia's rankedTopSitesTask),
-    /// then the presets, twelve in all; the first four visited sites start ticked.
+    /// then the presets, twelve in all; the first four visited sites start ticked. Without an
+    /// import, only the presets: no other browser's history is read unasked (#757).
     func loadPinCandidates() {
         guard !pinsLoaded else { return }
         pinsLoaded = true
-        let source = self.source?.kind == .safari ? nil : (self.source ?? sources.first { $0.kind != .safari && !$0.needsFullDiskAccess })
+        let source = self.source?.kind == .safari || needsFullDiskAccess ? nil : self.source
         let fromExport = exportTopSites
         let existing = Set(store.tabs(under: store.focusedSpace.favoritesContainerID).compactMap { $0.tab.flatMap { FaviconKey.key(for: $0.url) } })
         pinCandidates = Self.presetPins

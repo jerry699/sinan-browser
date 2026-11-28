@@ -350,8 +350,24 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
             if done.frame.insetBy(dx: -6, dy: -6).contains(p) { commitRename() }
             return
         }
-        store.togglePinnedCollapsed(spaceID)
+        // The pair's first click toggled here only if it came within the double-click interval (the
+        // first could have been the •••'s, which keeps its clicks).
+        let firstToggled = toggledAt.map { event.timestamp - $0 <= NSEvent.doubleClickInterval } ?? false
+        switch ToggleRowClick.action(clickCount: event.clickCount, onName: p.x >= iconRect.maxX, firstClickToggled: firstToggled) {
+        case .toggle:
+            store.togglePinnedCollapsed(spaceID)
+            toggledAt = event.timestamp
+        case .rename(let undoToggle):
+            toggledAt = nil
+            if undoToggle { store.togglePinnedCollapsed(spaceID) }
+            CraLog.note("space header double-click: rename\(undoToggle ? ", pinned tabs put back" : "")")
+            beginRename()
+        }
     }
+
+    /// When this header's last click collapsed or expanded the pinned tabs, for a double-click's
+    /// second click to put them back.
+    private var toggledAt: TimeInterval?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         renameField == nil ? makeSpaceMenu() : nil
@@ -494,7 +510,7 @@ enum SpaceMenu {
             MenuItems.add(m, "Edit Theme Color…") { open(); actions.editSpaceTheme(space) }
         case .setProfile:
             let profiles = MenuItems.submenu(m, "Set Profile")
-            MenuItems.add(profiles, "Default", on: space.profileID == nil) { store.setProfile(nil, forSpace: id) }
+            MenuItems.add(profiles, store.profileName(nil), on: space.profileID == nil) { store.setProfile(nil, forSpace: id) }
             for p in store.profiles {
                 MenuItems.add(profiles, p.name, on: space.profileID == p.id) { store.setProfile(p.id, forSpace: id) }
             }
@@ -722,6 +738,13 @@ final class FavoritesGridView: NSView {
                 let cells = panes.map { p in
                     let key = p.tab?.iconKey
                     let icon = favicons.image(forKey: key)
+                    if !favicons.hasOwnImage(forKey: key), let tab = p.tab {
+                        // A favorite that never loaded here: its site's icon, after those of the space on screen
+                        // when this space is paged out of view.
+                        SiteIconLoader.shared.want(.init(
+                            url: tab.url, iconKey: key, visible: store.showsSpace(spaceID, in: self, window: ui.windowID),
+                            incognito: store.isIncognito(space: spaceID)), into: favicons)
+                    }
                     return FavoriteTileModel.Cell(id: p.id, title: p.displayTitle, icon: icon,
                                                   glyphDark: icon == nil ? nil : favicons.glyphIsDark(forKey: key),
                                                   selectionColors: logoOutline ? favicons.selectionColors(forKey: key) : nil)
@@ -824,7 +847,14 @@ final class FavoritesGridView: NSView {
             b.iconRowHeight = PinnedExtensionGrid.cellHeight
             let id = p.id
             b.action = { [weak self] in self?.actions.runExtension(id) }
-            b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
+            // Arc's menu for the pinned extension (#695).
+            b.menuProvider = { [weak self] in
+                guard let self else { return nil }
+                let profile = self.store.profileDirectoryName(space: self.spaceID)
+                return ExtensionStore.shared.entries.first { $0.extensionID == id }.map {
+                    ExtensionsMenu.actionMenu(for: $0, profile: profile, open: { [weak self] in self?.actions.openURL($0) })
+                }
+            }
         }
         extensionOrder = ids
     }
@@ -1650,7 +1680,7 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         // Not while the Library covers the sidebar (the tile is still under the pointer's path there).
         guard let store = grid?.store, grid?.ui.libraryPage == nil, grid?.ui.libraryReveal == nil, !isHiddenOrHasHiddenAncestor,
               model?.selected != true, model?.cells.count == 1, let url = store.item(itemID)?.tab?.url,
-              SidebarTabPreview.kind(for: url, settings: store.settings) != nil else { return nil }
+              let kind = SidebarTabPreview.kind(for: url, settings: store.settings), kind != .pullRequest else { return nil }
         return url
     }
 
@@ -1723,11 +1753,18 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         let cells = model?.cells ?? []
         let i = cellIndex(at: convert(p.locationInWindow, from: nil))
         let id = cells.indices.contains(i) ? cells[i].id : itemID
-        grid.store.selectTab(id, window: grid.ui.windowID)
-        // A double-click on a favorite away from its pinned page goes back there (#264); in a
-        // split, the pressed pane.
+        // A double-click on a favorite away from its pinned page goes back there (#264); a ⌘-click
+        // separates its page into a new Today tab and keeps the favorite open (#801, Arc 1.174.2). In a
+        // split, both act on the pressed pane.
         let away = grid.store.item(id)?.tab.map { $0.url != $0.savedURL } ?? false
-        if FavoriteClick.action(clickCount: event.clickCount, navigatedAway: away) == .backToPinnedPage {
+        switch FavoriteClick.action(clickCount: event.clickCount, navigatedAway: away, modifiers: event.modifierFlags.rawValue) {
+        case .separateFromFavorite:
+            grid.ui.clearPicks(anchor: id)
+            grid.actions.separateFavorite(id)
+        case .select:
+            grid.store.selectTab(id, window: grid.ui.windowID)
+        case .backToPinnedPage:
+            grid.store.selectTab(id, window: grid.ui.windowID)
             CraLog.note("favorite double-click: back to pinned page")
             grid.actions.resetPinnedTab(id)
         }
@@ -1791,7 +1828,10 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         if item.isSplit, let m = model {
             return SidebarMenus.split(id, panes: m.cells.map { ($0.id, $0.title) }, open: m.selected, store: store, ui: ui, actions: actions,
                                       window: window) {
-                MenuItems.add($0, action: "favoriteTab", title: Self.removeTitle(id, store)) { store.withPinningWindow(ui.windowID) { store.removeFromFavorites(id) } }
+                MenuItems.add($0, action: "favoriteTab", title: Self.removeTitle(id, store)) {
+                    // A shared split is deleted (⌘Z brings it back, #806); a space's own goes to Pinned.
+                    if store.profileList(ofItem: id) != nil { store.removeFavorite(id) } else { store.withPinningWindow(ui.windowID) { store.removeFromFavorites(id) } }
+                }
                 Self.moveToProfile($0, id, store)
                 $0.addItem(.separator())
             }
@@ -1806,7 +1846,7 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         // Arc 1.173.1's favorite menu, read live 19 Nov 2026 (#600): Copy Link, Share ▸ | Change Icon…,
         // Rename…, Mute, Customize Page… (open), Edit Pinned Page ▸ | Add/Open in Split View, Duplicate,
         // Move to ▸ | Close Tab (open), Remove Favorite. Cra keeps Use Site Icon and Tile Color ▸, which
-        // have no other way in, by Change Icon….
+        // have no other way in, by Change Icon…, and lists Edit Pinned Page ▸ flat after Rename… (#76).
         guard let t = item.tab else { return m }
         let open = store.isSelected(id, window: ui.windowID)
         MenuItems.add(m, action: "copyURL", title: "Copy Link") {
@@ -1840,11 +1880,12 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
             store.setTileColor(tileColor, for: grid.spaceFavoriteIDs())
         }
         MenuItems.add(m, action: "renameTab", title: "Rename…") { ui.renamingID = id }
-        SidebarMenus.muteItem(m, id, t, ui: ui, store: store, actions: actions)
-        if open, web?.host != nil { MenuItems.add(m, "Customize Page…") { actions.performAction("newBoost") } }
+        // Edit Pinned URL… and Replace Pinned URL with Current beside Rename…, flat (#76).
         if t.liveItemURL == nil {
             SidebarMenus.pinnedURLItems(m, id, navigatedAway: t.url != t.savedURL, store: store, actions: actions)
         }
+        SidebarMenus.muteItem(m, id, t, ui: ui, store: store, actions: actions)
+        if open, web?.host != nil { MenuItems.add(m, "Customize Page…") { actions.performAction("newBoost") } }
         m.addItem(.separator())
         if open {
             MenuItems.add(m, action: "addSplitView", title: "Add Split View") { actions.performAction("addSplitView") }
@@ -1856,17 +1897,11 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         Self.moveToProfile(m, id, store)
         m.addItem(.separator())
         if open || ui.loadedTabIDs.contains(id) {
-            MenuItems.add(m, action: "closeTab", title: "Close Tab") { actions.closeTab(id) }
+            MenuItems.add(m, action: "closeTab", title: "Close Tab") { actions.closeTabFromItsMenu(id) }
         }
         // Arc deletes the favorite. A shared one goes as before; a space's own goes to the archive,
-        // where Library can bring it back.
-        MenuItems.add(m, "Remove Favorite") {
-            if store.profileList(ofItem: id) != nil {
-                store.withPinningWindow(ui.windowID) { store.removeFromFavorites(id) }
-            } else {
-                store.archiveTab(id, reason: .manual)
-            }
-        }
+        // where Library can bring it back. ⌘Z puts either back in its place (#806).
+        MenuItems.add(m, "Remove Favorite") { store.removeFavorite(id) }
         return m
     }
 
@@ -1908,7 +1943,7 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
     private static func moveToProfile(_ menu: NSMenu, _ id: UUID, _ store: SidebarStore) {
         guard let list = store.profileList(ofItem: id) else { return }
         let profiles = MenuItems.submenu(MenuItems.submenu(menu, "Move to"), "Profile")
-        MenuItems.add(profiles, "Default", on: list.profileID == nil) { store.moveFavorite(id, toProfile: nil) }
+        MenuItems.add(profiles, store.profileName(nil), on: list.profileID == nil) { store.moveFavorite(id, toProfile: nil) }
         for p in store.profiles {
             MenuItems.add(profiles, p.name, on: list.profileID == p.id) { store.moveFavorite(id, toProfile: p.id) }
         }
