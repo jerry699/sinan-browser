@@ -43,8 +43,13 @@ jobs:
       # are a release build's. A debug build's recorder alone costs 0.16–0.22 %.
       - name: Build the fork's vendor libs (llama.cpp, whisper.cpp)
         run: |
-          git clone --depth 1 --branch b4999 https://github.com/ggerganov/llama.cpp vendor/llama.cpp
-          git clone --depth 1 --branch v1.9.6 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
+          # vendor 源码快照（fork 自己的 release，与本地 vendor 逐字节一致，替代猜 tag；
+          # b4999 是旧 API，CraInferenceHelper 的 llama_get_memory 在快照里才存在）
+          curl -sSL --retry 3 -o /tmp/llama.tar.xz https://github.com/jerry699/sinan-browser/releases/download/vendor-snapshots-20261128/llama-cpp-snapshot-20261128.tar.xz
+          curl -sSL --retry 3 -o /tmp/whisper.tar.xz https://github.com/jerry699/sinan-browser/releases/download/vendor-snapshots-20261128/whisper-cpp-snapshot-20261128.tar.xz
+          echo "a6fea71c8f1e3a548c60c17ac3c30d90750d34bf727c78c3ea4aefaab0231b95  /tmp/llama.tar.xz" | shasum -a 256 -c -
+          echo "84603485382d3ac7dd4878cbf186f3e8f6eb58e7e7e56f86af6040ac887c2f42  /tmp/whisper.tar.xz" | shasum -a 256 -c -
+          mkdir -p vendor && tar -xJf /tmp/llama.tar.xz -C vendor && tar -xJf /tmp/whisper.tar.xz -C vendor
           LLAMA_NO_BLAS=1 scripts/build-llama.sh
           scripts/build-whisper.sh
       - name: Build (release, ad-hoc signed)

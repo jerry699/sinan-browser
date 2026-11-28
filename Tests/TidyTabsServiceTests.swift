@@ -44,6 +44,10 @@ import Foundation
         f.store.applyTidy(TidyTabs.plan([.init(name: "Existing", tabs: Array(0..<6))], tabCount: 6, existingGroups: []),
                           tabIDs: Array(ids.prefix(6)), in: f.sid)
         let task = f.service.tidy(f.sid, store: f.store)
+        if !(task != nil && f.store.looseTodayTabs(f.sid).count == 1) {
+            let loose = f.store.looseTodayTabs(f.sid)
+            FileHandle.standardError.write("DIAG task=\(task != nil) looseCount=\(loose.count) looseURLs=\(loose.compactMap { \$0.tab?.url }) tidying=\(f.store.tidyingSpaces) modelAvailable=\(f.service.modelAvailable) offers=\(f.service.offers(f.sid, store: f.store))\n".data(using: .utf8)!)
+        }
         expect(task != nil && f.store.looseTodayTabs(f.sid).count == 1,
                "six-total eligibility still allows a request with one loose tab beside grouped tabs")
         await f.generator.waitFor(1)

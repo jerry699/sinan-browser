@@ -24,7 +24,15 @@ CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 # 架构旗标：arm runner 上会给 x86_64 目标塞 -mcpu=apple-m3 → clang 直接拒绝。
 # 钉成目标架构，ggml 的 ARM -mcpu 探测才会跳过（走下面显式的 AVX2/FMA/F16C）。
 EXTRA_CMAKE=()
-if [ "$CROSS" = on ]; then EXTRA_CMAKE=(-DCMAKE_SYSTEM_PROCESSOR="$ARCH"); fi
+if [ "$CROSS" = on ]; then
+  EXTRA_CMAKE=(-DCMAKE_SYSTEM_PROCESSOR="$ARCH")
+elif [ "$ARCH" = arm64 ]; then
+  # ARM 原生（CI runner）：ggml 的 -mcpu=native 探针在 Apple clang 新版下提取不到
+  # 具体旗标，回退 native —— TU 级 __ARM_FEATURE_MATMUL_INT8 与 dot 函数的
+  # target 属性失配，vmmlaq_s32 always_inline 编译报错。钉 apple-m2：M1/M2/M3
+  # 都有 i8mm，特征检查与编译一致。
+  EXTRA_CMAKE=(-DGGML_CPU_ARM_ARCH=apple-m2)
+fi
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
