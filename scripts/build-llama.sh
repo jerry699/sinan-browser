@@ -42,6 +42,7 @@ cmake -S "$SRC" -B "$BUILD" \
   -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_FMA=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_F16C=$([ "$CROSS" = on ] && echo ON || echo OFF) \
+  -DGGML_METAL=OFF \
   -DGGML_BLAS=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo OFF || echo ON) \
   -DGGML_BLAS_VENDOR=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo n/a || echo Apple) \
   -DLLAMA_CURL=OFF \
