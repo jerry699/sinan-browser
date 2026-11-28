@@ -16,6 +16,10 @@ CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 
 [ -f "$SRC/CMakeLists.txt" ] || { echo "vendor/whisper.cpp is missing" >&2; exit 1; }
 
+# 交叉时钉目标架构（同 build-llama.sh）：ggml 按 CMAKE_SYSTEM_PROCESSOR（= runner
+# 本机架构）选旗标，arm runner 会给 x86_64 目标塞 -mcpu=apple-m3 → clang 拒绝。
+EXTRA_CMAKE=()
+if [ "$CROSS" = on ]; then EXTRA_CMAKE=(-DCMAKE_SYSTEM_PROCESSOR="$ARCH"); fi
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
@@ -25,9 +29,9 @@ cmake -S "$SRC" -B "$BUILD" \
   -DWHISPER_BUILD_SERVER=OFF \
   -DGGML_METAL=OFF \
   -DGGML_NATIVE=$([ "$CROSS" = on ] && echo OFF || echo ON) \
-  -DGGML_NATIVE=ON \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_COMMON=OFF \
-  -Wno-dev
+  -Wno-dev \
+  "${EXTRA_CMAKE[@]}"
 cmake --build "$BUILD" --config Release -j "$(sysctl -n hw.ncpu)"
 ls -la "$BUILD/src/libwhisper.a"

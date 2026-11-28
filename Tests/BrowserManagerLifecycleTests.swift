@@ -606,7 +606,7 @@ enum BrowserManagerLifecycleTests {
         let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
         let runtime = manager.ensureRuntime(for: store.createTab(url: "https://example.test/probe").id)!
         var line: String?
-        PageProbe.run(runtime.browser) { line = $0 }
+        PageProbe.run(runtime.browser) { probe, _, _ in line = probe }
         expect(runtime.browser.lastParams.contains(#""awaitPromise":true"#) && runtime.browser.lastParams.contains("frameRate"),
                "the probe waits for the page to count its frames")
         let page = #"{"blank":false,"ready":"complete","visibility":"visible","painted":false,"frameRate":0}"#
@@ -900,6 +900,7 @@ enum BrowserManagerLifecycleTests {
     /// page opens in WebKit in its pane. A site taken back to Chromium (kept) isn't watched.
     @MainActor
     private static func widevineFailureCase() async {
+        PageEngines.resetChoicesForTests()
         let store = SidebarStore()
         let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
         let url = "https://drm.example.test/watch/1"
@@ -910,7 +911,7 @@ enum BrowserManagerLifecycleTests {
         let page = manager.runtime(for: tab)!.browser
         page.navigate(to: url)
         expect(!(page is WebKitBrowser) && pending(page, "cra:Runtime.evaluate") == 1 && page.lastIsolatedParams.contains("drmFailNext"),
-               "an ordinary site's page opens in Chromium, watched for Widevine that fails")
+               "an ordinary site's page opens in Chromium, watched for Widevine that fails \(pending(page, "cra:Runtime.evaluate")) / \(page.lastIsolatedParams.prefix(80))")
 
         // Nothing failed (the page went away, the watch answered empty): nothing moves.
         page.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":""}}"#)
@@ -3016,12 +3017,12 @@ enum BrowserManagerLifecycleTests {
         manager.browser(caller, requestsPermissionForOrigin: "https://meet.example", kinds: 2) { answers.append("mic \($0)") }
         expect(AppDialog.presented.isEmpty && answers.isEmpty, "a page behind the tab in front asks nothing while it is behind")
         manager.show(behind, focus: false)
-        expect(AppDialog.presented.map(\.title) == ["https://meet.example wants to use your microphone"],
+        expect(AppDialog.presented.map(\.title) == ["https://meet.example 想要使用你的麦克风"],
                "its tab coming to the front puts its sheet up")
         manager.browser(caller, requestsPermissionForOrigin: "https://meet.example", kinds: 8) { answers.append("notifications \($0)") }
         expect(AppDialog.presented.count == 1, "a second request waits for the sheet before it")
         AppDialog.presented[0].answer(.alertFirstButtonReturn)
-        expect(answers == ["mic true"] && AppDialog.presented.map(\.title).last == "https://meet.example wants to show notifications",
+        expect(answers == ["mic true"] && AppDialog.presented.map(\.title).last == "https://meet.example 想要显示通知",
                "Allow answers the first request, and the next one asks")
         AppDialog.presented[1].answer(.alertSecondButtonReturn)
         expect(answers == ["mic true", "notifications false"], "Block answers the second")
@@ -3053,7 +3054,7 @@ enum BrowserManagerLifecycleTests {
         otherManager.show(mover, focus: false)
         await drainMainQueue()
         expect(otherManager.runtime(for: mover)?.browser === moving
-               && AppDialog.presented.map(\.title).last == "https://call.example wants to use your camera and microphone",
+               && AppDialog.presented.map(\.title).last == "https://call.example 想要使用你的摄像头 和 麦克风",
                "a page moved to another window asks there")
         AppDialog.presented.last!.answer(.alertFirstButtonReturn)
         expect(answers.last == "call true", "and its answer reaches the page")
@@ -3061,7 +3062,7 @@ enum BrowserManagerLifecycleTests {
         // Chromium withdrew the request (the page navigated): its sheet goes and nothing answers.
         manager.browser(page(manager, front), requestsPermissionForOrigin: "https://example.test", kinds: 4) { answers.append("location \($0)") }
         let sheet = AppDialog.presented.last!
-        expect(sheet.title == "https://example.test wants to use your location" && sheet.isUp, "the tab in front asks at once")
+        expect(sheet.title == "https://example.test 想要使用你的位置" && sheet.isUp, "the tab in front asks at once")
         manager.browserWithdrewPermissionRequest(page(manager, front))
         expect(!sheet.isUp && answers.last == "call true", "a withdrawn request's sheet goes, unanswered")
         manager.browser(caller, requestsPermissionForOrigin: "https://meet.example", kinds: 2) { answers.append("mic again \($0)") }
@@ -3101,7 +3102,7 @@ enum BrowserManagerLifecycleTests {
         var answers: [Bool] = []
         manager.browser(page(manager, asking), requestsPermissionForOrigin: "https://router.example", kinds: 1 << 7) { answers.append($0) }
         let first = AppDialog.presented.last
-        expect(first?.title == "https://router.example wants to access other devices on your local network"
+        expect(first?.title == "https://router.example 想要访问本地网络中的其他设备"
                && first?.anchor === webArea && first?.isUp == true,
                "the request asks in a card on its tab's page")
         manager.show(other, focus: false)
@@ -3456,4 +3457,11 @@ private final class Observer: BrowserManagerDelegate {
     func browserManagerOpenLinkInSplit(_ url: String, fromTab tabID: UUID) { splitLinks.append((url, tabID)) }
     var backgroundTabs: [UUID] = []
     func browserManagerOpenedInBackground(_ tabID: UUID) { backgroundTabs.append(tabID) }
+    // 右键翻译/蒸馏（fork 的扩展桥）进了合并后的协议：桩保持确定性，不触发任何动作。
+    var translateSelections: [(text: String, tab: UUID, point: NSPoint)] = []
+    func browserManagerTranslateSelection(_ text: String, tabID: UUID, atPoint point: NSPoint) {
+        translateSelections.append((text, tabID, point))
+    }
+    var distillRequests: [UUID] = []
+    func browserManagerDistillPageMedia(tabID: UUID) { distillRequests.append(tabID) }
 }

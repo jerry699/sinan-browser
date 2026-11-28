@@ -12,6 +12,7 @@ xcrun swiftc -swift-version 5 -parse-as-library ${CRA_TEST_SWIFTC_FLAGS:-} \
   Tests/Support/LegacyLiveFolderResults.swift Sources/Cra/Services/FaviconCache.swift Sources/Cra/Services/SafeStorage.swift Sources/Cra/App/EngineFramework.swift \
   Sources/Cra/Services/CraLog.swift Sources/Cra/Services/Scheduler.swift \
   Sources/Cra/Services/TidyTabsService.swift Sources/Cra/Services/TidyTabsModel.swift \
+  Sources/Cra/Services/MaxLocal.swift Sources/Cra/Services/LocalRuntime.swift Sources/Cra/Services/MaxProvider.swift Sources/Cra/Services/ModelDownloader.swift \
   Tests/Support/ManualScheduler.swift \
   Tests/TidyTabsServiceTests.swift -o "$TEST_DIR/tidy-tabs-service-tests"
 [ -z "${CRA_TEST_KEEP:-}" ] || cp "$TEST_DIR/tidy-tabs-service-tests" "$CRA_TEST_KEEP/"

@@ -20,9 +20,15 @@ CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 # i8mm 特性标志缺失而编译失败（vmmlaq_s32 always_inline）——CI 侧 LLAMA_NO_BLAS=1
 # 关掉 BLAS；本地 Intel 构建保持 ON（性能优化，都是 CPU 推理）。注释不得插进
 # 反斜杠续行链中间：续行遇到 # 会吞掉整条逻辑命令的剩余部分。
+# 交叉编译时 ggml-cpu 的 cmake 按 CMAKE_SYSTEM_PROCESSOR（= runner 本机架构）选
+# 架构旗标：arm runner 上会给 x86_64 目标塞 -mcpu=apple-m3 → clang 直接拒绝。
+# 钉成目标架构，ggml 的 ARM -mcpu 探测才会跳过（走下面显式的 AVX2/FMA/F16C）。
+EXTRA_CMAKE=()
+if [ "$CROSS" = on ]; then EXTRA_CMAKE=(-DCMAKE_SYSTEM_PROCESSOR="$ARCH"); fi
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
+  "${EXTRA_CMAKE[@]}" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$TARGET" \
   -DGGML_NATIVE=$([ "$CROSS" = on ] && echo OFF || echo ON) \
   -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \

@@ -79,6 +79,15 @@ enum PageEngines {
 
     static func engine(of browser: CraBrowser) -> PageEngine { browser is WebKitBrowser ? .webKit : .chromium }
 
+    /// A test harness's reset: choices are process-global and persist across a run's cases, so one
+    /// case's "Always" keep would stop a later case's Widevine-failure watch for the same host.
+    /// Empties the choices (and the file they persist to) and re-reads the env.
+    static func resetChoicesForTests() {
+        choices = ProtectedMediaChoices()
+        try? FileManager.default.removeItem(at: file.url)
+        sites = load()
+    }
+
     /// The service a WebKit page plays ("Spotify"), nil for a Chromium page: Cra tells the user why
     /// its extensions don't run there and it signs in on its own.
     static func protectedMediaService(of browser: CraBrowser) -> String? {
