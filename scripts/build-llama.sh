@@ -16,6 +16,10 @@ CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 
 [ -f "$SRC/CMakeLists.txt" ] || { echo "vendor/llama.cpp is missing" >&2; exit 1; }
 
+# GitHub 的 macOS runner（Xcode 16 + Accelerate 头文件）在 ARM 原生构建时会因
+# i8mm 特性标志缺失而编译失败（vmmlaq_s32 always_inline）——CI 侧 LLAMA_NO_BLAS=1
+# 关掉 BLAS；本地 Intel 构建保持 ON（性能优化，都是 CPU 推理）。注释不得插进
+# 反斜杠续行链中间：续行遇到 # 会吞掉整条逻辑命令的剩余部分。
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
@@ -24,12 +28,11 @@ cmake -S "$SRC" -B "$BUILD" \
   -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_FMA=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_F16C=$([ "$CROSS" = on ] && echo ON || echo OFF) \
-  -DGGML_METAL=OFF \
   # GitHub 的 macOS runner（Xcode 16 + Accelerate 头文件）在 ARM 原生构建时会因
-  # i8mm 特性标志缺失而编译失败（vmmlaq_s32 always_inline）——CI 侧关掉 BLAS，
-  # 本地 Intel 构建保持 ON（性能优化，引擎不受影响，都是 CPU 推理）。
+  # i8mm 特性标志缺失而编译失败（vmmlaq_s32 always_inline）——CI 侧 LLAMA_NO_BLAS=1
+  # 关掉 BLAS；本地 Intel 构建保持 ON（性能优化，都是 CPU 推理）。
   -DGGML_BLAS=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo OFF || echo ON) \
-  -DGGML_BLAS_VENDOR=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo "n/a" || echo Apple) \
+  -DGGML_BLAS_VENDOR=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo n/a || echo Apple) \
   -DLLAMA_CURL=OFF \
   -DLLAMA_BUILD_TESTS=OFF \
   -DLLAMA_BUILD_EXAMPLES=OFF \
