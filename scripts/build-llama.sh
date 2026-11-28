@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SRC="$PWD/vendor/llama.cpp"
-BUILD="$SRC/build"
+BUILD="$SRC/build$([ "$ARCH" = "$(uname -m)" ] && echo "" || echo "-$ARCH")"
 TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 ARCH="${BUILD_ARCH:-$(uname -m)}"
 # Cross-compiling (the CI Intel job on an arm runner) cannot use -march=native.
@@ -57,8 +57,9 @@ LIBS=(
   "$BUILD/ggml/src/libggml.a"
   "$BUILD/ggml/src/libggml-base.a"
   "$BUILD/ggml/src/libggml-cpu.a"
-  "$BUILD/ggml/src/ggml-blas/libggml-blas.a"
 )
+# LLAMA_NO_BLAS=1（CI 的 ARM 原生档）不产 ggml-blas，链接清单里也就没有它。
+if [ "${LLAMA_NO_BLAS:-0}" != 1 ]; then LIBS+=("$BUILD/ggml/src/ggml-blas/libggml-blas.a"); fi
 # otool writes into a file: awk exits after the first match, and with pipefail the
 # resulting SIGPIPE would fail the script. A static archive carries one
 # LC_BUILD_VERSION per object file; the first is enough.

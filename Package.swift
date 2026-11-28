@@ -37,6 +37,10 @@ let sparkleRoot = "\(Context.packageDirectory)/vendor/sparkle"
 // Cra.app/Contents/MacOS.
 let llamaRoot = "\(Context.packageDirectory)/vendor/llama.cpp"
 let llamaBuild = Context.environment["CRA_LLAMA_BUILD"] ?? "\(llamaRoot)/build"
+// LLAMA_NO_BLAS=1（CI 的 ARM 原生档）不产 ggml-blas：库里存在才链接，跟随 build-llama.sh。
+import Foundation
+let llamaBlasLib = "\(llamaBuild)/ggml/src/ggml-blas/libggml-blas.a"
+let llamaBlas = FileManager.default.fileExists(atPath: llamaBlasLib) ? ["\(llamaBlasLib)"] : []
 
 // whisper.cpp's static libraries, built for the host CPU by scripts/build-whisper.sh
 // (Accelerate for BLAS, Metal off): the transcription process. Same layout as llama's.
@@ -67,7 +71,7 @@ var craTargets: [Target] = [
                 "\(llamaBuild)/src/libllama.a",
                 "\(llamaBuild)/ggml/src/libggml.a",
                 "\(llamaBuild)/ggml/src/libggml-cpu.a",
-                "\(llamaBuild)/ggml/src/ggml-blas/libggml-blas.a",
+] + llamaBlas + [
                 "\(llamaBuild)/ggml/src/libggml-base.a",
                 "-framework", "Accelerate", "-framework", "Foundation",
             ]),
