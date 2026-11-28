@@ -27,7 +27,7 @@ if [ "${1:-}" = --strip ]; then
     [ -f "$f" ] || continue
     while IFS= read -r rpath; do
       [ -n "$rpath" ] && install_name_tool -delete_rpath "$rpath" "$f"
-    done < <(paths "$f" rpaths | grep -E '\.xctoolchain|/Xcode[^/]*\.app/|/PackageFrameworks/?$' || true)
+    done < <(paths "$f" rpaths | grep -E '\.xctoolchain|/Xcode[^/]*\.app/|/PackageFrameworks/?$|/CommandLineTools/Library/Developer/Frameworks' || true)
   done
   exit 0
 fi

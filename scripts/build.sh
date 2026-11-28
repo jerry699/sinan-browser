@@ -196,6 +196,7 @@ done
 # macOS's malware check could fail on a Mac without that Xcode (GitHub #720, 0.1.54 for Intel). It goes before
 # signing; nothing in the bundle may point outside it and the system after that.
 scripts/check-load-paths.sh --strip "$APP/Contents/MacOS/$EXE" "$APP/Contents/MacOS/CraPluginHost" \
+  "$APP/Contents/MacOS/CraNativeHost" "$APP/Contents/MacOS/CraWhisper" "$APP/Contents/MacOS/CraInferenceHelper" \
   "$APP"/Contents/Frameworks/*.app/Contents/MacOS/* "$DOCK_TILE/Contents/MacOS/CraDockTile"
 scripts/check-load-paths.sh "$APP"
 
