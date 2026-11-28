@@ -56,6 +56,8 @@ enum TestRoot { case today }
 
 @MainActor final class SidebarStore {
     static let documentReplaced = Notification.Name("CraSidebarDocumentReplaced")
+    /// P3 索引增肥的历史文本落点；桩不需要行为，签名跟上真身即可（#730）。
+    func updateHistoryText(url: String, description: String?, snippet: String?) {}
     struct Settings {
         var autoPictureInPicture = false
         /// Hosts whose Site Control Center switch turned automatic Picture in Picture off.
@@ -284,4 +286,10 @@ enum WebKitStores {
 /// The engine Cra runs on (Sources/Cra/App/EngineFramework.swift): the Chromium engine here.
 enum EngineFramework {
     static let isChromiumEngine = true
+}
+
+/// 支付通道修复（fork）的桩：BrowserManager 的加载回调会调它（OBS-5），
+/// 测试桩保持确定性 —— 任何 URL 都不触发修复流程。
+@MainActor enum PaymentRecovery {
+    static func offerRepairIfTradeFailure(url: String, browser: CraBrowser) {}
 }

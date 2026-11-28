@@ -28,9 +28,6 @@ cmake -S "$SRC" -B "$BUILD" \
   -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_FMA=$([ "$CROSS" = on ] && echo ON || echo OFF) \
   -DGGML_F16C=$([ "$CROSS" = on ] && echo ON || echo OFF) \
-  # GitHub 的 macOS runner（Xcode 16 + Accelerate 头文件）在 ARM 原生构建时会因
-  # i8mm 特性标志缺失而编译失败（vmmlaq_s32 always_inline）——CI 侧 LLAMA_NO_BLAS=1
-  # 关掉 BLAS；本地 Intel 构建保持 ON（性能优化，都是 CPU 推理）。
   -DGGML_BLAS=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo OFF || echo ON) \
   -DGGML_BLAS_VENDOR=$([ "${LLAMA_NO_BLAS:-0}" = 1 ] && echo n/a || echo Apple) \
   -DLLAMA_CURL=OFF \

@@ -10,7 +10,7 @@ xcrun swiftc -swift-version 5 -parse-as-library -emit-module -emit-object -modul
 xcrun swiftc -swift-version 5 -parse-as-library ${CRA_TEST_SWIFTC_FLAGS:-} -I "$TEST_DIR" "$TEST_DIR/CraCEF.o" \
   "${CRACORE[@]}" Sources/Cra/Perf/Perf.swift \
   Sources/Cra/Services/Import/*.swift \
-  Sources/Cra/Services/SidebarStore.swift Sources/Cra/Services/SidebarIntegrity.swift Sources/Cra/Services/Persistence.swift \
+  Sources/Cra/Services/SidebarStore.swift Sources/Cra/App/L10n.swift Sources/Cra/Services/SidebarIntegrity.swift Sources/Cra/Services/Persistence.swift \
   Sources/Cra/Services/SettingsSyncService.swift Sources/Cra/Services/EaselFolder.swift Sources/Cra/Services/BundleDirectory.swift \
   Sources/Cra/Services/FaviconCache.swift Sources/Cra/Services/SafeStorage.swift Sources/Cra/App/EngineFramework.swift \
   Sources/Cra/Services/CraLog.swift Sources/Cra/Services/Scheduler.swift \
