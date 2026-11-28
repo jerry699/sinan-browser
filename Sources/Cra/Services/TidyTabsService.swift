@@ -267,6 +267,9 @@ final class TidyTabsService {
             let group = preAssignPrefs?.rule(forHost: host)
                 ?? preAssignPrefs?.entries.first(where: { $0.title == title })?.group
             if let group, groupNames.contains(group) {
+                if ProcessInfo.processInfo.environment["CRA_DEBUG_PREASSIGN"] == "1" {
+                    CraLog.note("DEBUG preassign: url=\(item.tab?.url ?? "?") title=\(title) host=\(host) → \(group)")
+                }
                 preAssigned.append((item, group))
             } else {
                 unknown.append(item)

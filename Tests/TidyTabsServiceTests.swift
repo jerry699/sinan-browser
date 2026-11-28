@@ -9,6 +9,9 @@ import Foundation
         setenv("CRA_DATA_DIR", root.path, 1)
         setenv("CRA_ARC_DIR", root.appendingPathComponent("NoArc").path, 1)
         setenv("CRA_TIDY_FAKE_MODEL", "off", 1)
+        // Auto-tidy Today 默认开：它的轮询 tick 会在跑得慢的测试回合随机插入，
+        // 把用例剩下的 loose tab 也归组 —— 生命周期断言必须关掉它才确定性。
+        TidyTabsService.setAutoTidyEnabled(false)
         _ = TidyTabsService.fakeModel
         setenv("CRA_TIDY_FAKE_MODEL", "1", 1)
         await entryGuards()
@@ -39,15 +42,13 @@ import Foundation
                    "public tidy rejects \(kind) without starting animation or changing the sidebar")
             expect(f.generator.requests.isEmpty, "rejected \(kind) entry cannot reach the provider")
         }
-        let f = Fixture(count: 7)
+        // 收尾 tab 换域：同域会被 applyTidy 刚教会的域规则（example.org → Existing）
+        // 确定性归组，tidy 不再发模型请求 —— 那是 P5-L2 的设计行为，不是回归。
+        let f = Fixture(count: 7, firstURL: "https://other.example/0")
         let ids = f.store.looseTodayTabs(f.sid).map(\.id)
         f.store.applyTidy(TidyTabs.plan([.init(name: "Existing", tabs: Array(0..<6))], tabCount: 6, existingGroups: []),
                           tabIDs: Array(ids.prefix(6)), in: f.sid)
         let task = f.service.tidy(f.sid, store: f.store)
-        if !(task != nil && f.store.looseTodayTabs(f.sid).count == 1) {
-            let loose = f.store.looseTodayTabs(f.sid)
-            FileHandle.standardError.write("DIAG task=\(task != nil) looseCount=\(loose.count) looseURLs=\(loose.compactMap { \$0.tab?.url }) tidying=\(f.store.tidyingSpaces) modelAvailable=\(f.service.modelAvailable) offers=\(f.service.offers(f.sid, store: f.store))\n".data(using: .utf8)!)
-        }
         expect(task != nil && f.store.looseTodayTabs(f.sid).count == 1,
                "six-total eligibility still allows a request with one loose tab beside grouped tabs")
         await f.generator.waitFor(1)
@@ -353,11 +354,11 @@ import Foundation
         let generator = Generator(), available = Availability()
         let service: TidyTabsService
         let sid: UUID
-        init(count: Int = 6, useFreshModel: Bool = false) {
+        init(count: Int = 6, useFreshModel: Bool = false, firstURL: String? = nil) {
             store = SidebarStore(clock: clock)
             store.settings.tidyTabs = true
             sid = store.createSpace(title: "Tidy lifecycle", emoji: "🧹").id
-            populate(store, sid: sid, count: count)
+            populate(store, sid: sid, count: count, firstURL: firstURL)
             let generator = self.generator, available = self.available
             let eligibility: (@MainActor () -> Bool)?
             if useFreshModel { eligibility = nil } else { eligibility = { available.value } }
@@ -408,8 +409,15 @@ import Foundation
         }
     }
 
-    private static func populate(_ store: SidebarStore, sid: UUID, count: Int) {
-        for n in 0..<count { store.createTab(url: "https://example.org/\(n)", title: "Tab \(n)", in: sid, select: false) }
+    private static func populate(_ store: SidebarStore, sid: UUID, count: Int, firstURL: String? = nil) {
+        for n in 0..<count {
+            // firstURL: 给第一个 tab 换域 —— newTabsAtTop 下 applyTidy 用 prefix(6) 分组的是
+            // 最新 6 个，漏网的是最老的（example.org/0）；P5-L2 域级规则按 host 学
+            // （example.org → 组），同域的漏网 tab 会被规则确定性预归组（不调模型）。
+            // 要走模型路径的用例给它换域。
+            let url = (n == 0 && firstURL != nil) ? firstURL! : "https://example.org/\(n)"
+            store.createTab(url: url, title: "Tab \(n)", in: sid, select: false)
+        }
     }
     private static func wire(_ store: SidebarStore, service: TidyTabsService) {
         store.tidyTabsChanged = { [weak store, weak service] enabled in if !enabled, let store { service?.cancelAll(store: store) } }

@@ -8,9 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SRC="$PWD/vendor/llama.cpp"
-BUILD="$SRC/build$([ "$ARCH" = "$(uname -m)" ] && echo "" || echo "-$ARCH")"
 TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 ARCH="${BUILD_ARCH:-$(uname -m)}"
+BUILD="$SRC/build$([ "$ARCH" = "$(uname -m)" ] && echo "" || echo "-$ARCH")"
 # Cross-compiling (the CI Intel job on an arm runner) cannot use -march=native.
 CROSS="$([ "$ARCH" = "$(uname -m)" ] && echo off || echo on)"
 
