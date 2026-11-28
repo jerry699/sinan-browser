@@ -527,6 +527,13 @@ final class SidebarTopBarView: NSView {
     private var morePanel: SidebarMorePanel?
     private var devNav = false
     private var fullscreen = false
+    /// 全屏时系统的浮动红绿灯是否仍在（macOS 15 及更早是；macOS 26 起全屏隐藏灯，
+    /// 上游的"灯没了、行从 20 pt 起"布局以其为参照系）。
+    private var fullScreenKeepsFloatingLights: Bool {
+        guard fullscreen else { return false }
+        if #available(macOS 26.0, *) { return false }
+        return true
+    }
     private var buttons: [String: SidebarGlyphButton] = [:]
     private var rowButtons: [SidebarGlyphButton] = []
     private var chevron: NSView?
@@ -758,9 +765,11 @@ final class SidebarTopBarView: NSView {
         // Row 1: 71 pt for the traffic lights, then the toggle. In fullscreen the lights are gone and
         // Arc draws it from 20 pt in (glyph 20–38.5 pt), in the floating panel too (#315); a windowed
         // floating panel draws stand-in lights.
+        // 司南（fork）：macOS 15 及更早的全屏里系统浮动灯**常驻**左上（上游参照的 macOS 26 才
+        // 隐藏）——行按钮照旧让位 71 pt，否则灯正好叠在折叠按钮上（用户 2026-11-28 截图实证）。
         // It moves left to stay 2 pt clear of ← when the sidebar is just wide enough for both.
         // Every glyph in the row is centred on the lights, as in Arc (#876: Cra drew them 1 pt higher).
-        let lights = !fullscreen
+        let lights = !fullscreen || fullScreenKeepsFloatingLights
         let nav = toggleShown ? Array(rowButtons.dropFirst()) : rowButtons
         let afterLights: CGFloat = lights ? 6 + 71 + 2 : 13
         if toggleShown, let t = rowButtons.first {
