@@ -32,6 +32,6 @@ cmake -S "$SRC" -B "$BUILD" \
   -DBUILD_SHARED_LIBS=OFF \
   -DLLAMA_BUILD_COMMON=OFF \
   -Wno-dev \
-  "${EXTRA_CMAKE[@]}"
+  ${EXTRA_CMAKE[@]+"${EXTRA_CMAKE[@]}"}
 cmake --build "$BUILD" --config Release -j "$(sysctl -n hw.ncpu)"
 ls -la "$BUILD/src/libwhisper.a"

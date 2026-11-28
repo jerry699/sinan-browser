@@ -28,7 +28,7 @@ if [ "$CROSS" = on ]; then EXTRA_CMAKE=(-DCMAKE_SYSTEM_PROCESSOR="$ARCH"); fi
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
-  "${EXTRA_CMAKE[@]}" \
+  ${EXTRA_CMAKE[@]+"${EXTRA_CMAKE[@]}"} \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$TARGET" \
   -DGGML_NATIVE=$([ "$CROSS" = on ] && echo OFF || echo ON) \
   -DGGML_AVX2=$([ "$CROSS" = on ] && echo ON || echo OFF) \

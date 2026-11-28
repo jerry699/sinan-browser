@@ -903,7 +903,7 @@ enum StoreTests {
         sqlite3_close(db)
         let plan = (try? FirefoxImporter.plan(browser: "Firefox", root: root)) ?? ImportPlan(source: "Firefox")
         expect(plan.spaces.first?.pinned.map(\.url) == ["https://example.com/docs"] && plan.spaces.first?.today.map(\.url) == ["https://example.com/open"],
-               "Firefox's web pages come over")
+               "Firefox's web pages come over: pinned=\(String(describing: plan.spaces.first?.pinned.map(\.url))) today=\(String(describing: plan.spaces.first?.today.map(\.url))) skips=\(plan.spaces.first?.skipped.map(\.title) ?? plan.skipped.map(\.title))")
         expect(plan.spaces.first?.skipped == [cra("Cra Settings", "cra://settings"),
                                               ImportSkip(title: "Most Visited", url: "place:sort=8&maxResults=10", reason: .onlyInItsBrowser),
                                               cra("History", "cra://history"),
@@ -1624,7 +1624,8 @@ enum StoreTests {
     /// Firefox's mozLz4: "mozLz40\0", the size as a little-endian uint32, one raw LZ4 block.
     private static func mozLz4(_ object: Any) throws -> Data {
         let json = try JSONSerialization.data(withJSONObject: object)
-        var block = Data(count: json.count + json.count / 255 + 64)
+        // LZ4_RAW 的编码器要约 3× 源大小的目标缓冲才肯编（macOS 15.8 上实测；小缓冲返回 0）。
+        var block = Data(count: json.count * 3 + 1024)
         let n = block.withUnsafeMutableBytes { out in json.withUnsafeBytes { src in
             compression_encode_buffer(out.bindMemory(to: UInt8.self).baseAddress!, out.count,
                                       src.bindMemory(to: UInt8.self).baseAddress!, json.count, nil, COMPRESSION_LZ4_RAW)

@@ -26,12 +26,19 @@ enum ProfileCleanup {
 
 enum AppPaths {
     static let supportDir: URL = {
-        // CRA_DATA_DIR runs a second, independent Cra (testing next to the installed one).
+        // CRA_DATA_DIR runs a second, independent Cra (testing next to the installed one)
+        // and gives every test harness its own data folder: without it the tests read and
+        // write the real 司南's data (an actual browsing session leaked into StoreTests).
         // Finder launches have no shell environment. The dev bundle must still stay
         // out of the signed application's profile when opened directly.
         // 司南: the installed app's data folder carries the brand now — a one-time rename
         // migrates an existing "Cra" folder (models, history, tidy memory, the Chromium
         // profile) before anything opens a file here. A failed move keeps the old folder.
+        if let dir = ProcessInfo.processInfo.environment["CRA_DATA_DIR"] {
+            let base = URL(fileURLWithPath: dir, isDirectory: true)
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            return base
+        }
         let folder = Bundle.main.bundleIdentifier == "dk.kildahl.cra.dev" ? "CraDev" : "司南"
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(folder, isDirectory: true)

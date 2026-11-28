@@ -80,6 +80,8 @@ var craTargets: [Target] = [
         path: "Sources/CraWhisper",
         cxxSettings: [.unsafeFlags([
             "-I", "\(whisperRoot)/include",
+            // whisper.cpp v1.9.6 起 ggml.h 搬进 ggml/include（whisper.h 直接 include 它）。
+            "-I", "\(whisperRoot)/ggml/include",
             "-O2",
         ])],
         linkerSettings: [

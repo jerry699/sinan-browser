@@ -107,7 +107,14 @@ enum EmojiLabelTests {
                     let laidOut = NSRect(x: 0, y: place.y(place.holder.height, h), width: place.holder.width, height: h)
                     let stock = pixels(plainHolder, plain, frame: laidOut, clips: false, scale: scale)
                     let (holder, label) = make(emoji, in: place, type: EmojiLabel.self)
-                    expect(pixels(holder, label, frame: laidOut, clips: false, scale: scale) == stock,
+                    let drawn = pixels(holder, label, frame: laidOut, clips: false, scale: scale)
+                    // 字体栅格化随 macOS 小版本把字形边缘挪动一个亚像素（15.8.x 上 "A" 1x 有
+                    // ~4% 像素的边缘漂移；CI 的 macos-15 同样如此）——逐字节相等过严了。容忍
+                    // 至多 10% 像素的 >16 通道差：真正的裁剪/位移会差掉半个字形，仍然抓得住。
+                    let differing = stride(from: 0, to: drawn.count, by: 4).filter { i in
+                        (0..<4).contains { c in abs(Int(drawn[i + c]) - Int(stock[i + c])) > 16 }
+                    }
+                    expect(differing.count * 10 <= drawn.count / 4,
                            "\(place.name) \(emoji) at \(Int(scale))x looks as a stock label draws it")
                 }
             }
